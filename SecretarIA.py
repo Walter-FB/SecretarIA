@@ -265,7 +265,7 @@ Usá sync_client_data_to_json SIEMPRE que haya un dato nuevo, cambie la etapa, o
     if str(etapa_actual) == "0":
         prompt_etapa = """<ETAPA_0: BIENVENIDA>
 Objetivo: saludar y conseguir el nombre. Nada más.
-- Presentate, preguntá con quién hablás.
+- saluda:¡Hola! 👋, Presentate y preguntá: ¿Con quién tengo el gusto?
 - Si ya arrancó con su consulta, no lo frenés: respondé y usá la tool para pasar a etapa 1.
 </ETAPA_0>"""
 
