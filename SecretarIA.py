@@ -2,9 +2,17 @@ from fastapi import FastAPI, Request, Response, BackgroundTasks
 import httpx
 import os
 import json
+import asyncio
 import anthropic
 import traceback
 from dotenv import load_dotenv
+
+try:
+    from proyecto import crear_evento_reunion
+    CALENDAR_DISPONIBLE = True
+except ImportError:
+    CALENDAR_DISPONIBLE = False
+    print("⚠️ proyecto.py no encontrado — creación de eventos en Calendar deshabilitada.")
 
 # ===================================================================
 # CONFIGURACIÓN E INICIALIZACIÓN DE LA APP Y VARIABLES DE ENTORNO
@@ -494,15 +502,30 @@ Objetivo: Agendar reunión rápida demostrando autoridad.
         try:
             url_walter = f"https://graph.facebook.com/v22.0/{PHONE_ID}/messages"
             headers_walter = {"Authorization": f"Bearer {WPP_TOKEN}", "Content-Type": "application/json"}
-            async with httpx.AsyncClient() as client_http: # usar un nuevo cliente asincrono
+            async with httpx.AsyncClient() as client_http:
                 await client_http.post(url_walter, json=payload_walter, headers=headers_walter)
                 print("[✅ NOTIFICACIÓN] Se avisó a Walter sobre el nuevo cliente interesado.")
-            
+
             # Marcamos como enviada y guardamos
             cliente["notificacion_enviada"] = True
             guardar_datos(datos)
         except Exception as e:
             print(f"[❌ ERROR NOTIFICANDO A WALTER]: {e}")
+
+        # Crear evento en Google Calendar si está disponible
+        if CALENDAR_DISPONIBLE:
+            horario = cliente.get("datos_extraidos", {}).get("horario_reunion") or "a confirmar"
+            rubro = cliente.get("datos_extraidos", {}).get("rubro_empresa")
+            try:
+                await asyncio.to_thread(
+                    crear_evento_reunion,
+                    nombre_cliente=nombre_cliente,
+                    horario_reunion=horario,
+                    numero_cliente=numero_cliente,
+                    rubro=rubro
+                )
+            except Exception as e:
+                print(f"[❌ ERROR CALENDAR]: {e}")
 
     # ===================================================================
     # ENVÍO DE LA RESPUESTA FINAL MEDIANTE WHATSAPP CLOUD API
