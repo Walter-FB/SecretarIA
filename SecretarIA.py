@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request, Response, BackgroundTasks
+from fastapi.responses import FileResponse
 import httpx
 import os
 import json
@@ -35,9 +36,17 @@ if CLAUDE_KEY:
 else:
     print("⚠️ ALERTA: No se encontró CLAUDE_API_KEY en el archivo .env")
 
-# Esto le dice al bot: "Si hay un disco conectado (DATABASE_PATH), usalo. 
-# Si no, guardá en la carpeta local (como hacés en tu PC)".
-DB_FILE = os.getenv("DATABASE_PATH", "datos_clientes.json")
+# Esto le dice al bot: "Si hay un disco conectado (DATABASE_PATH), usalo.
+# Si no, intentamos guardar en /data/ (volumen persistente de Railway).
+# Si tampoco existe /data/, guardamos en la carpeta local (como en la PC)".
+_DB_ENV = os.getenv("DATABASE_PATH")
+if _DB_ENV:
+    DB_FILE = _DB_ENV
+elif os.path.isdir("/data"):
+    DB_FILE = "/data/datos_clientes.json"
+else:
+    DB_FILE = "datos_clientes.json"
+print(f"[DB] Usando base de datos en: {DB_FILE}")
 
 def cargar_datos():
     """Carga los datos del archivo JSON. Si no existe, devuelve un diccionario vacío."""
@@ -68,6 +77,29 @@ async def verify(request: Request):
     if params.get("hub.mode") == "subscribe" and params.get("hub.verify_token") == VERIFY_TOKEN:
         return Response(content=params.get("hub.challenge"), status_code=200)
     return Response(content="Error de verificación", status_code=403)
+
+# ===================================================================
+# ENDPOINT PARA DESCARGAR LA BASE DE DATOS (DEBUG EN PRODUCCIÓN)
+# Útil para verificar que el JSON se está generando en Railway.
+# URL: https://tu-app.railway.app/descargar_db
+# ===================================================================
+@app.get("/descargar_db")
+async def descargar_db():
+    if os.path.exists(DB_FILE):
+        return FileResponse(DB_FILE, media_type="application/json", filename="datos_clientes_backup.json")
+    return {"error": "La base de datos todavía no se creó o el bot no recibió ningún mensaje.", "db_path": DB_FILE}
+
+@app.get("/estado_db")
+async def estado_db():
+    """Muestra info sobre dónde está guardando el JSON y si existe."""
+    existe = os.path.exists(DB_FILE)
+    size = os.path.getsize(DB_FILE) if existe else 0
+    return {
+        "db_path": DB_FILE,
+        "existe": existe,
+        "size_bytes": size,
+        "dir_data_existe": os.path.isdir("/data"),
+    }
 
 # ===================================================================
 # 2. RECEPCIÓN DE MENSAJES (WEBHOOK POST)
