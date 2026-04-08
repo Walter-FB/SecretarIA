@@ -35,7 +35,9 @@ if CLAUDE_KEY:
 else:
     print("⚠️ ALERTA: No se encontró CLAUDE_API_KEY en el archivo .env")
 
-DB_FILE = os.path.join("data", "datos_clientes.json")
+# Esto le dice al bot: "Si hay un disco conectado (DATABASE_PATH), usalo. 
+# Si no, guardá en la carpeta local (como hacés en tu PC)".
+DB_FILE = os.getenv("DATABASE_PATH", "datos_clientes.json")
 
 def cargar_datos():
     """Carga los datos del archivo JSON. Si no existe, devuelve un diccionario vacío."""
