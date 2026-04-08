@@ -46,26 +46,49 @@ elif os.path.isdir("/data"):
     DB_FILE = "/data/datos_clientes.json"
 else:
     DB_FILE = "datos_clientes.json"
-print(f"[DB] Usando base de datos en: {DB_FILE}")
+
+# ===================================================================
+# DIAGNÓSTICO DE ARRANQUE — buscá estas líneas en los logs de Railway
+# ===================================================================
+print("\n========== [🔍 DIAGNÓSTICO DB] ==========")
+print(f"  DB_FILE (variable)  : {DB_FILE}")
+print(f"  DB_FILE (absoluto)  : {os.path.abspath(DB_FILE)}")
+print(f"  /data existe        : {os.path.isdir('/data')}")
+if os.path.isdir("/data"):
+    contenido = os.listdir("/data")
+    print(f"  Contenido de /data  : {contenido if contenido else '(vacío)'}")
+print(f"  JSON ya existe      : {os.path.exists(DB_FILE)}")
+print("==========================================\n")
 
 def cargar_datos():
     """Carga los datos del archivo JSON. Si no existe, devuelve un diccionario vacío."""
     if not os.path.exists(DB_FILE):
+        print(f"[📂 CARGA] JSON no existe todavía en: {os.path.abspath(DB_FILE)}")
         return {}
     try:
         with open(DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            datos = json.load(f)
+        print(f"[📂 CARGA] JSON cargado desde: {os.path.abspath(DB_FILE)} | Clientes: {len(datos)}")
+        return datos
     except Exception as e:
-        print(f"Error leyendo {DB_FILE}: {e}")
+        print(f"[❌ ERROR CARGA] No se pudo leer {os.path.abspath(DB_FILE)}: {e}")
         return {}
 
 def guardar_datos(datos):
-    """Guarda los datos en el archivo JSON."""
+    """Guarda los datos y loggea la ruta exacta para diagnóstico en Railway."""
     try:
+        # Asegura que el directorio exista antes de escribir
+        directorio = os.path.dirname(DB_FILE)
+        if directorio:
+            os.makedirs(directorio, exist_ok=True)
+
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(datos, f, indent=4, ensure_ascii=False)
+
+        # ⬇️ Esta línea es CLAVE — buscala en los logs de Railway
+        print(f"[📁 GUARDADO] Ruta absoluta: {os.path.abspath(DB_FILE)} | Clientes: {len(datos)}")
     except Exception as e:
-        print(f"Error guardando en {DB_FILE}: {e}")
+        print(f"[❌ ERROR CRÍTICO AL GUARDAR]: {e}")
 
 # ===================================================================
 # 1. VERIFICACIÓN DEL WEBHOOK (Meta lo pide una vez)
@@ -291,7 +314,13 @@ Hacemos chatbots de IA a medida para WhatsApp (se puede consultar por otros medi
 </REGLA_DE_ORO>
 
 <HERRAMIENTA>
-Usá sync_client_data_to_json SIEMPRE que haya un dato nuevo, cambie la etapa, o el cliente confirme reunión.
+Usá sync_client_data_to_json SIEMPRE que detectes un dato nuevo en el mensaje actual. No esperés al próximo turno.
+REGLAS CRÍTICAS:
+- Si el cliente dijo su nombre → llamá a la tool YA con nombre_contacto.
+- Si mencionó su rubro → llamá a la tool YA con rubro_empresa.
+- Si confirmó una necesidad → llamá a la tool YA con necesidad_cliente.
+- Si aceptó una reunión → llamá a la tool YA con reunion_coordinada: true.
+- Podés llamar a la tool Y responder texto en el mismo turno. No son excluyentes.
 </HERRAMIENTA>"""
 
     prompt_etapa = ""
@@ -505,6 +534,13 @@ Objetivo: Agendar reunión rápida demostrando autoridad.
 
     # Guardamos el JSON de nuevo por las dudas
     guardar_datos(datos)
+
+    # Log de estado actualizado post-turno (refleja lo que realmente quedó guardado)
+    dx = cliente.get("datos_extraidos", {})
+    nombre_guardado = dx.get("nombre_contacto") or "—"
+    etapa_guardada = dx.get("etapa", "—")
+    rubro_guardado = dx.get("rubro_empresa") or "—"
+    print(f"[💾 ESTADO GUARDADO] {to_number} | Nombre: {nombre_guardado} | Etapa: {etapa_guardada} | Rubro: {rubro_guardado}")
 
     # ===================================================================
     # ENVÍO DE NOTIFICACIÓN A WALTER SI HAY REUNIÓN COORDINADA
