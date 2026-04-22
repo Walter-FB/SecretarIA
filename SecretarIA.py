@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, Response, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 import httpx
 import os
 import json
@@ -212,7 +212,6 @@ async def procesar_y_responder(user_text: str, to_number: str, msg_id: str = Non
             "historial": [],  # Acá guardaremos la conversación
             "notificacion_enviada": False,
             "datos_extraidos": {
-                "etapa": 0,
                 "nombre_contacto": None,
                 "rubro_empresa": None,
                 "necesidad_cliente": None,
@@ -250,7 +249,6 @@ async def procesar_y_responder(user_text: str, to_number: str, msg_id: str = Non
 
     # Para evitar errores con usuarios viejos que no tienen estas nuevas keys usamos .get()
     datos_cliente = cliente.get("datos_extraidos", {})
-    etapa_actual = datos_cliente.get("etapa", 0)
     nombre = datos_cliente.get("nombre_contacto", "No especificado")
     rubro = datos_cliente.get("rubro_empresa", "No especificado")
     necesidad = datos_cliente.get("necesidad_cliente", "No especificada")
@@ -268,8 +266,8 @@ Sos SecretarIA, una secretaria muy amigable, la asesora virtual de una agencia a
 (aclaracion todas tus charlas se dan en whatsApp responde como tal)
 1. Recopilar su nombre, a qué se dedica y sus necesidades/requerimientos con el objetivo de ver si lo podemos ayudar.
 2. Brindarle asesoramiento demostrando exactamente en qué medida nuestros chatbots pueden ayudarlo con su problema específico.
-3. Agendas reuniones o lo derivas a una reunion en caso de cualquier problema especifico o disconformidad absoluta del cliente
-
+3. Agendas reuniones para cerrar la charla y mas asesoramiento o lo derivas a una reunion/a Walter en caso de cualquier problema especifico o disconformidad absoluta del cliente
+4. Cuando confirme día, hora y formato, usá la tool con reunion_coordinada: true
 
 3. Generar FOMO (Fear Of Missing Out): mostrarle cómo la automatización de tareas y preguntas repetitivas le permitirá escalar su negocio y tener más tiempo libre a un costo reducido.
 </MISION_Y_OBJETIVO>
@@ -279,6 +277,8 @@ Sos SecretarIA, una secretaria muy amigable, la asesora virtual de una agencia a
 - Cero adulación. Tu empatía se demuestra yendo directo a la solución y valorando el tiempo del cliente.
 - PROHIBIDO hacer "efecto loro": Nunca repitas lo que el cliente acaba de decir como si fuera un descubrimiento
 - En caso de que el cliente requiera mas informacion de como se emplearia SecretarIA: Tenés conocimientos sólidos en programación y desarrollo de software. Usalos para dar asesoramiento técnico real y proponer automatizaciones lógicas, no respuestas genéricas, solo en caso de que veas posible una implementacion real. Sos una SecretarIA completa!
+- si te preguntan por precios le ofreces agendar una reunion para hablarlo con detalle
+- a la hora de agendar ofrece directo alguna fecha y hora concreta al dia siguiente 
 </ESTILO_E_IDENTIDAD>
 
 <REGLAS_DE_LONGITUD>
@@ -299,7 +299,6 @@ Hacemos chatbots de IA a medida para WhatsApp (se puede consultar por otros medi
 - Nombre: {nombre}
 - Rubro: {rubro}
 - Necesidad detectada: {necesidad}
-- Etapa actual: {etapa_actual}
 - Reunión coordinada: {reunion}
 - Horario de reunión: {horario}
 - Tipo de contacto: {tipo_contacto}
@@ -323,47 +322,13 @@ REGLAS CRÍTICAS:
 - Podés llamar a la tool Y responder texto en el mismo turno. No son excluyentes.
 </HERRAMIENTA>"""
 
-    prompt_etapa = ""
-    
-    if str(etapa_actual) == "0":
-        prompt_etapa = """<ETAPA_0: BIENVENIDA>
-Objetivo: saludar y conseguir el nombre. Nada más.
-- saluda:¡Hola! 👋, Presentate y preguntá: ¿Con quién tengo el gusto?
-- Si ya arrancó con su consulta, no lo frenés: respondé y usá la tool para pasar a etapa 1.
-</ETAPA_0>"""
-
-    elif str(etapa_actual) == "1":
-        prompt_etapa = """<ETAPA_1: DESCUBRIMIENTO>
-Objetivo: Validar el problema operativo y meter el gancho del tiempo.
-- Si menciona su negocio, mostrá que entendés la fricción de ese rubro (asumí el problema). Ejemplo: si dice 'Canchas de tenis', decile que gestionar reservas y cobrar señas quema mucho tiempo.
-- NO hagas interrogatorios abiertos genéricos. Buscá que el cliente confirme que está tapado de trabajo repetitivo.
-- Cuando confirme la fricción o pregunte cómo se resuelve, usá la tool para pasar a Etapa 2.
-</ETAPA_1>"""
-
-    elif str(etapa_actual) in ("2", "2.0"):
-        prompt_etapa = """<ETAPA_2: PROPUESTA Y CIERRE>
-Objetivo: Agendar reunión rápida demostrando autoridad.
-- Explicá cómo el bot soluciona su problema puntual y genera el FOMO (acá podés usar tus 5-7 oraciones si es necesario).
-- Proponé la reunión de inmediato con opciones concretas: "Para ver cómo encajaría, te propongo una videollamada corta con Walter. ¿Te sirve mañana a la mañana o preferís el jueves a la tarde?"
-- Reducí pasos: si elige un día, proponé vos la hora.
-- Cuando confirme día, hora y formato, usá la tool con reunion_coordinada: true.
-</ETAPA_2>"""
-
-    elif str(etapa_actual) == "2.1":
-        prompt_etapa = """<ETAPA_2.1: CLIENTE DIRECTO O IMPACIENTE>
-- Reconocés que quiere respuestas rápidas.
-- Aclarás: "El piso es USD 500, pero depende de tus procesos. Una videollamada de 15 min con Walter nos da la pauta real. ¿Cuándo te viene bien?"
-- Si acepta, coordiná y pasá a reunion_coordinada: true.
-</ETAPA_2.1>"""
-
-    system_instructions = f"{system_prompt_base}\n{prompt_etapa}"
+    system_instructions = f"{system_prompt_base}"
 
     # ===================================================================
     # DEFINICIÓN DE HERRAMIENTA DE ACTUALIZACIÓN (FUNCTION CALLING)
     # Permite a Claude actualizar el JSON si detecta nueva información
     # ===================================================================
     def sync_client_data_to_json(
-        etapa_sugerida: float,
         nombre_contacto: str = None,
         rubro_empresa: str = None,
         necesidad_cliente: str = None,
@@ -373,14 +338,12 @@ Objetivo: Agendar reunión rápida demostrando autoridad.
     ):
         """
         Sincroniza la información extraída del cliente con la base de datos local (JSON). 
-        Llama a esta función cada vez que detectes un dato nuevo o un cambio de etapa en la conversación.
+        Llama a esta función cada vez que detectes un dato nuevo en la conversación.
         """
         if "datos_extraidos" not in cliente:
             cliente["datos_extraidos"] = {}
             
         # Actualizamos solo lo que Gemini nos mande
-        if etapa_sugerida is not None:
-            cliente["datos_extraidos"]["etapa"] = etapa_sugerida
         if nombre_contacto:
             cliente["datos_extraidos"]["nombre_contacto"] = nombre_contacto
         if rubro_empresa:
@@ -406,15 +369,11 @@ Objetivo: Agendar reunión rápida demostrando autoridad.
         "name": "sync_client_data_to_json",
         "description": (
             "Sincroniza la información extraída del cliente con la base de datos local (JSON). "
-            "Llamá a esta función cada vez que detectes un dato nuevo o un cambio de etapa en la conversación."
+            "Llamá a esta función cada vez que detectes un dato nuevo en la conversación."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "etapa_sugerida": {
-                    "type": "number",
-                    "description": "Nueva etapa del cliente (0, 1, 2, 2.1)"
-                },
                 "nombre_contacto": {
                     "type": "string",
                     "description": "Nombre del cliente si lo mencionó"
@@ -439,8 +398,7 @@ Objetivo: Agendar reunión rápida demostrando autoridad.
                     "type": "string",
                     "description": "Tipo de contacto preferido (videollamada, llamada, etc.)"
                 }
-            },
-            "required": ["etapa_sugerida"]
+            }
         }
     }
 
@@ -465,7 +423,6 @@ Objetivo: Agendar reunión rápida demostrando autoridad.
                 # Claude quiere llamar a nuestra función — la ejecutamos nosotros
                 args = block.input
                 sync_client_data_to_json(
-                    etapa_sugerida=args.get("etapa_sugerida"),
                     nombre_contacto=args.get("nombre_contacto"),
                     rubro_empresa=args.get("rubro_empresa"),
                     necesidad_cliente=args.get("necesidad_cliente"),
@@ -527,20 +484,14 @@ Objetivo: Agendar reunión rápida demostrando autoridad.
     # Agregamos la respuesta de IA al historial
     cliente["historial"].append({"rol": "asistente", "texto": ai_response})
     
-    # Salto forzado a Etapa 1 si estaba en Etapa 0 (para no estancarse en el saludo)
-    if str(cliente.get("datos_extraidos", {}).get("etapa", 0)) == "0":
-        cliente["datos_extraidos"]["etapa"] = 1
-        print(f"[{to_number}] Transición forzada de Etapa 0 a 1.")
-
     # Guardamos el JSON de nuevo por las dudas
     guardar_datos(datos)
 
     # Log de estado actualizado post-turno (refleja lo que realmente quedó guardado)
     dx = cliente.get("datos_extraidos", {})
     nombre_guardado = dx.get("nombre_contacto") or "—"
-    etapa_guardada = dx.get("etapa", "—")
     rubro_guardado = dx.get("rubro_empresa") or "—"
-    print(f"[💾 ESTADO GUARDADO] {to_number} | Nombre: {nombre_guardado} | Etapa: {etapa_guardada} | Rubro: {rubro_guardado}")
+    print(f"[💾 ESTADO GUARDADO] {to_number} | Nombre: {nombre_guardado} | Rubro: {rubro_guardado}")
 
     # ===================================================================
     # ENVÍO DE NOTIFICACIÓN A WALTER SI HAY REUNIÓN COORDINADA
@@ -605,3 +556,21 @@ Objetivo: Agendar reunión rápida demostrando autoridad.
         print(f"\n[❌ ERROR CRÍTICO HTTPX]:")
         traceback.print_exc()
 
+# ===================================================================
+# ENDPOINT PARA VER EL JSON DESDE EL NAVEGADOR
+# ===================================================================
+@app.get("/ver_clientes")
+async def ver_clientes():
+    # Usamos DB_FILE que ya definiste para el volumen de Railway
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return JSONResponse(content=data)
+        except Exception as e:
+            return {"error": f"No se pudo leer el JSON: {str(e)}"}
+    
+    return {
+        "error": "El archivo no existe todavía en el volumen.",
+        "ruta_buscada": os.path.abspath(DB_FILE)
+    }
