@@ -9,8 +9,11 @@ from database import engine, Base
 import models  # noqa: F401 — necesario para que Base.metadata conozca las tablas
 
 # Crear tablas al iniciar (si no existen)
-Base.metadata.drop_all(bind=engine)
 Base.metadata.create_all(bind=engine)
+
+# Asegurarse de que exista la empresa por defecto
+from init_db import seed_empresa_default
+seed_empresa_default()
 
 # Importamos las rutas
 from routes import whatsapp

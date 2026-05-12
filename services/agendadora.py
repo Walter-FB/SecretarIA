@@ -114,28 +114,27 @@ TIMEZONE = ZoneInfo('America/Argentina/Buenos_Aires')
 
 
 def _build_calendar_service():
-    """
-    Autentica con Service Account.
-
-    En Railway, creá la variable de entorno GOOGLE_SERVICE_ACCOUNT con el
-    JSON completo de la service account (el archivo que descargás de
-    Google Cloud Console). Ejemplo:
-        GOOGLE_SERVICE_ACCOUNT = {"type":"service_account","project_id":...}
-
-    La service account tiene que tener acceso al calendario:
-      - Abrí Google Calendar → Configuración del calendario → Compartir
-      - Agregá el email de la service account (client_email del JSON)
-      - Dale permiso "Realizar cambios en eventos"
-    """
     sa_json = os.getenv('GOOGLE_SERVICE_ACCOUNT')
     if not sa_json:
+        print("❌ [CALENDAR ERROR]: La variable GOOGLE_SERVICE_ACCOUNT está vacía o no existe en Railway.")
         raise EnvironmentError(
             "Falta la variable de entorno GOOGLE_SERVICE_ACCOUNT. "
             "Pegá el JSON completo de la service account en Railway."
         )
-    info  = json.loads(sa_json)
-    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-    return build('calendar', 'v3', credentials=creds, cache_discovery=False)
+    
+    try:
+        info = json.loads(sa_json)
+    except json.JSONDecodeError as e:
+        print(f"❌ [CALENDAR ERROR]: El JSON de la Service Account tiene un error de formato: {e}")
+        print(f"Contenido recibido (primeros 50 caracteres): {sa_json[:50]}...")
+        raise
+
+    try:
+        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+        return build('calendar', 'v3', credentials=creds, cache_discovery=False)
+    except Exception as e:
+        print(f"❌ [CALENDAR ERROR]: Error al autenticar con Google: {e}")
+        raise
 
 
 # ===================================================================
@@ -272,14 +271,21 @@ def _is_busy(service, start: datetime, end: datetime) -> bool:
 
 
 def _crear_evento(service, titulo: str, start: datetime, end: datetime, descripcion: str = '') -> str:
+    print(f"📅 [CALENDAR INFO] Intentando crear evento: '{titulo}' desde {start} hasta {end}")
     event  = {
         'summary':     titulo,
         'description': descripcion,
         'start': {'dateTime': start.isoformat(), 'timeZone': str(TIMEZONE)},
         'end':   {'dateTime': end.isoformat(),   'timeZone': str(TIMEZONE)}
     }
-    creado = service.events().insert(calendarId='primary', body=event).execute()
-    return creado.get('htmlLink', '')
+    try:
+        creado = service.events().insert(calendarId='primary', body=event).execute()
+        enlace = creado.get('htmlLink', '')
+        print(f"✅ [CALENDAR SUCCESS] Evento creado con éxito: {enlace}")
+        return enlace
+    except Exception as e:
+        print(f"❌ [CALENDAR ERROR]: Falló la creación del evento en Google Calendar: {e}")
+        raise
 
 
 # ===================================================================
