@@ -32,10 +32,12 @@ Cálido, eficiente, al grano. Usás "vos". Una pregunta por mensaje. Sin emojis 
 </TONO>
 
 <TU_TRABAJO>
-1. Consultá disponibilidad con consultar_calendar según la especialidad del paciente
-2. Ofrecé hasta 3 opciones concretas: día, hora y profesional
-3. Cuando el paciente elija, confirmá el resumen del turno
-4. Informale que para efectivizar el turno necesita abonar la consulta y derivalo a cobranzas
+1. Siempre consultá disponibilidad real con consultar_calendar antes de proponer horarios.
+2. Si el paciente menciona una fecha o un concepto de tiempo, usá eso para consultar el calendario: hoy, mañana, pasado mañana, este lunes, el próximo martes, 16 de mayo, 14/05, etc.
+3. Si no tiene fecha clara, preguntá: "¿Te queda mejor hoy, mañana, pasado mañana o otro día específico?"
+4. Ofrecé hasta 3 opciones concretas con día, hora y profesional.
+5. Si el paciente responde solo con una fecha parcial, pedí la hora exacta de forma breve.
+6. Cuando el paciente elija, confirmá el resumen del turno y derivá a cobranzas.
 
 Tu trabajo termina cuando el paciente acepta pagar. De ahí en adelante es cobranzas.
 </TU_TRABAJO>
@@ -100,8 +102,7 @@ TOOLS_AGENDADORA = [
                 "fecha_desde": {"type": "string", "description": "Fecha desde (YYYY-MM-DD)"},
                 "texto_fecha": {"type": "string", "description": "Fecha en lenguaje natural, por ejemplo 'mañana a las 10'"},
                 "dias_a_consultar": {"type": "integer", "description": "Cantidad de días (default: 3)"}
-            },
-            "required": ["fecha_desde"]
+            }
         }
     },
     {
@@ -219,7 +220,10 @@ def _parse_fecha_hora(texto: str, timezone: ZoneInfo = TIMEZONE) -> tuple[dateti
     if not texto:
         return None, None
 
-    texto = texto.lower().replace('pasado manana', 'pasado mañana').replace('pasado mañana', 'pasado mañana').replace('hoy', 'hoy')
+    texto = texto.lower()
+    texto = texto.replace('pasado manana', 'pasado mañana').replace('pasado mañana', 'pasado mañana')
+    texto = texto.replace('el próximo ', 'proximo ').replace('el próximo', 'proximo')
+    texto = texto.replace(' de la mañana', ' am').replace(' de la tarde', ' pm').replace(' de la noche', ' pm')
     texto = texto.replace(' a las ', ' ').replace(' hs', ' ').replace(' horas', ' ')
     texto = _normalize_text(texto)
 
@@ -296,6 +300,11 @@ def _parse_fecha_hora(texto: str, timezone: ZoneInfo = TIMEZONE) -> tuple[dateti
     return start, end
 
 
+def _parse_fecha_desde(texto: str, timezone: ZoneInfo = TIMEZONE):
+    start, _ = _parse_fecha_hora(texto, timezone)
+    return start.date() if start else None
+
+
 def _is_busy(service, start: datetime, end: datetime) -> bool:
     query = {
         'timeMin': start.isoformat(),
@@ -330,13 +339,20 @@ def _build_available_slots(busy_ranges: list[tuple[datetime, datetime]], start_d
     return slots
 
 
-def _consultar_calendar(fecha_desde: str, dias: int = 3) -> str:
-    if not fecha_desde:
-        fecha_desde = datetime.now(TIMEZONE).strftime('%Y-%m-%d')
-    try:
-        fecha_inicio = datetime.fromisoformat(fecha_desde).date()
-    except ValueError:
-        fecha_inicio = datetime.now(TIMEZONE).date()
+def _consultar_calendar(fecha_desde: str, dias: int = 3, texto_fecha: str = None) -> str:
+    if texto_fecha:
+        parsed = _parse_fecha_desde(texto_fecha)
+        if parsed:
+            fecha_inicio = parsed
+        else:
+            fecha_inicio = datetime.now(TIMEZONE).date()
+    else:
+        if not fecha_desde:
+            fecha_desde = datetime.now(TIMEZONE).strftime('%Y-%m-%d')
+        try:
+            fecha_inicio = datetime.fromisoformat(fecha_desde).date()
+        except ValueError:
+            fecha_inicio = datetime.now(TIMEZONE).date()
 
     service = _build_calendar_service()
     time_min = datetime(fecha_inicio.year, fecha_inicio.month, fecha_inicio.day, 0, 0, tzinfo=TIMEZONE)
@@ -441,11 +457,18 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
             resp_msg = Mensaje(cliente_id=cliente.id, rol="asistente", texto=texto_respuesta)
             db.add(resp_msg)
         
+        if not texto_respuesta and not tools_a_ejecutar:
+            fallback_text = "Perdón, no entendí bien la fecha. ¿Podés decirme si querés hoy, mañana, pasado mañana o un día específico? Ejemplo: mañana a las 10 o martes 14/5 a las 16."
+            await enviar_mensaje_wpp(to_number, fallback_text)
+            resp_msg = Mensaje(cliente_id=cliente.id, rol="asistente", texto=fallback_text)
+            db.add(resp_msg)
+
         for tool in tools_a_ejecutar:
             if tool["name"] == "consultar_calendar":
                 fecha_desde = tool["input"].get("fecha_desde", datetime.utcnow().strftime("%Y-%m-%d"))
                 dias = tool["input"].get("dias_a_consultar", 3)
-                resultado = _consultar_calendar(fecha_desde, dias)
+                texto_fecha = tool["input"].get("texto_fecha")
+                resultado = _consultar_calendar(fecha_desde, dias, texto_fecha)
                 await enviar_mensaje_wpp(to_number, resultado)
             elif tool["name"] == "iniciar_cobranzas":
                 dia = tool["input"].get("dia", "")
@@ -503,5 +526,9 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
         print(f"\n[❌ ERROR AGENDADORA]: {e}")
         import traceback
         traceback.print_exc()
+        try:
+            await enviar_mensaje_wpp(to_number, "Perdón, hubo un problema revisando la agenda. ¿Podés decirme otra fecha o horario?")
+        except Exception:
+            pass
     finally:
         db.close()
