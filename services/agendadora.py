@@ -450,7 +450,7 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
                         derivar = "manual"
 
                 except Exception as e:
-                    print(f"[❌ ERROR EN TOOL {tool_name}]: {e}")
+                    print(f"[❌ ERROR EN TOOL {tool_name}]: {e}", flush=True)
                     import traceback; traceback.print_exc()
                     tool_results.append({
                         "type":        "tool_result",
@@ -478,7 +478,7 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
         print(f"[✅ AGENDADORA] Proceso completado para {to_number}")
 
     except Exception as e:
-        print(f"\n[❌ ERROR AGENDADORA]: {e}")
+        print(f"\n[❌ ERROR AGENDADORA]: {e}", flush=True)
         import traceback; traceback.print_exc()
         try:
             await enviar_mensaje_wpp(to_number, "Perdón, hubo un problema revisando la agenda. ¿Podés decirme otra fecha o horario?")

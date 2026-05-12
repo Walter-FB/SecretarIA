@@ -1,5 +1,9 @@
 from fastapi import FastAPI
 from dotenv import load_dotenv
+import sys
+
+# Forzar a Python a que NO guarde los prints en memoria (soluciona el problema de los logs en Railway)
+sys.stdout.reconfigure(line_buffering=True)
 
 # Cargar variables de entorno
 load_dotenv()
