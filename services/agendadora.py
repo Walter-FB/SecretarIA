@@ -36,7 +36,7 @@ Cálido, eficiente, al grano. Usás "vos". Una pregunta por mensaje. Sin emojis 
 2. Si el paciente menciona una fecha o concepto de tiempo (hoy, mañana, pasado mañana, el lunes, 16 de mayo, etc.), usá eso para consultar el calendario.
 3. Si no tiene fecha clara, preguntá: "¿Te queda mejor hoy, mañana, pasado mañana o un día específico?"
 4. Respondé siempre con texto visible, aunque uses herramientas. No te quedes en silencio.
-5. Cuando el paciente elija un turno, confirmá el resumen y derivá a cobranzas.
+5. Cuando el paciente elija un turno, confirmá el resumen y derivá a cobranzas. Al llamar iniciar_cobranzas, incluí siempre el campo iso_datetime copiándolo tal cual aparece entre [ISO:...] en la respuesta del calendario.
 Tu trabajo termina cuando el paciente acepta pagar.
 </TU_TRABAJO>
 
@@ -81,9 +81,10 @@ TOOLS_AGENDADORA = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "dia":         {"type": "string", "description": "Día del turno (ej. miércoles 16)"},
-                "hora":        {"type": "string", "description": "Hora del turno (ej. 15hs)"},
-                "profesional": {"type": "string", "description": "Profesional elegido"}
+                "dia":          {"type": "string", "description": "Día del turno (ej. miércoles 16)"},
+                "hora":         {"type": "string", "description": "Hora del turno (ej. 15hs)"},
+                "profesional":  {"type": "string", "description": "Profesional elegido"},
+                "iso_datetime": {"type": "string", "description": "Datetime ISO del slot, tal como aparece entre [ISO:...] en la respuesta del calendario. Usalo siempre que esté disponible para evitar errores de interpretación."}
             },
             "required": ["dia", "hora", "profesional"]
         }
@@ -199,11 +200,23 @@ def _parse_fecha_hora(texto: str) -> tuple[datetime, datetime] | tuple[None, Non
         return None, None
 
     hora, minuto = 10, 0
-    hm = re.search(r'(\d{1,2})(?::(\d{2}))?', t)
-    if hm:
-        hora   = int(hm.group(1))
-        minuto = int(hm.group(2)) if hm.group(2) else 0
-        if hora < 7: hora += 12  # "3" → 15
+
+    # Buscar HH:MM explícito primero
+    hm_explicito = re.search(r'\b(\d{1,2}):(\d{2})\b', t)
+    if hm_explicito:
+        hora   = int(hm_explicito.group(1))
+        minuto = int(hm_explicito.group(2))
+        if hora < 7: hora += 12
+    else:
+        # Buscar TODOS los números sueltos y tomar el ÚLTIMO.
+        # El número del día aparece primero ("miércoles 16 15hs" → [16, 15]),
+        # la hora siempre es el último número en el string.
+        todos = list(re.finditer(r'\b(\d{1,2})\b', t))
+        if todos:
+            ultimo = int(todos[-1].group(1))
+            if 1 <= ultimo <= 22:  # validar rango razonable de hora
+                hora = ultimo
+                if hora < 7: hora += 12
 
     start = datetime(fecha.year, fecha.month, fecha.day, hora, minuto, tzinfo=TIMEZONE)
     return start, start + timedelta(hours=1)
@@ -239,6 +252,8 @@ def _consultar_calendar(texto_fecha: str, dias: int = 3) -> str:
             busy_ranges.append((s, e))
 
         # Generar slots disponibles de 1 hora entre 9 y 18
+        # IMPORTANTE: el cursor avanza de 1 HORA en 1 HORA (no de 30 min)
+        # para que cada slot mostrado sea exactamente el bloque que se va a reservar.
         slots = []
         for day_offset in range(dias):
             day = fecha_inicio + timedelta(days=day_offset)
@@ -249,13 +264,17 @@ def _consultar_calendar(texto_fecha: str, dias: int = 3) -> str:
                 overlap = any(not (cend <= bs or cursor >= be) for bs, be in busy_ranges)
                 if not overlap:
                     slots.append(cursor)
-                cursor += timedelta(minutes=30)
+                cursor += timedelta(hours=1)  # avance de 1h, no de 30 min
 
         if not slots:
             return f"No hay turnos disponibles en los próximos {dias} días desde {texto_fecha}. ¿Querés que busque en otra fecha?"
 
-        lineas = [slot.strftime('%A %d/%m a las %H:%M').capitalize() for slot in slots[:4]]
-        return "Turnos disponibles:\n" + "\n".join(f"- {l}" for l in lineas)
+        lineas = []
+        for slot in slots[:4]:
+            label = slot.strftime('%A %d/%m a las %H:%M').capitalize()
+            iso   = slot.isoformat()          # ej: 2025-05-16T15:00:00-03:00
+            lineas.append(f"- {label} [ISO:{iso}]")
+        return "Turnos disponibles:\n" + "\n".join(lineas)
 
     except Exception as e:
         logging.warning(f"[❌ CALENDAR ERROR]: {e}")
@@ -415,9 +434,20 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
                         dia         = tool_input.get("dia", "")
                         hora        = tool_input.get("hora", "")
                         profesional = tool_input.get("profesional", "")
-                        start, end  = _parse_fecha_hora(f"{dia} {hora}")
+                        iso_dt      = tool_input.get("iso_datetime", "")
 
-                        if not start:
+                        # Prioridad: usar el ISO exacto devuelto por consultar_calendar
+                        if iso_dt:
+                            try:
+                                start = datetime.fromisoformat(iso_dt).astimezone(TIMEZONE)
+                            except ValueError:
+                                start = None
+                        else:
+                            start, _ = _parse_fecha_hora(f"{dia} {hora}")
+
+                        end = (start + timedelta(hours=1)) if start else None
+
+                        if not start or not end:
                             resultado = f"No pude interpretar la fecha '{dia} {hora}'. ¿Podés confirmar día y hora exactos?"
                         else:
                             service = _build_calendar_service()

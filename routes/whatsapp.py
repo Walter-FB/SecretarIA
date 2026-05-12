@@ -73,8 +73,8 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         try:
             cliente = db.query(Cliente).filter(Cliente.telefono == phone_number).first()
             mensajes_enviados = cliente.mensajes_enviados if cliente else 0
-            # IMPORTANTE: Cambiamos a 'agendadora' por defecto si el cliente no existe
-            estado_agente = cliente.estado_agente if cliente else "agendadora"
+            # IMPORTANTE: Cambiamos a 'principal' por defecto si el cliente no existe
+            estado_agente = cliente.estado_agente if cliente else "principal"
         finally:
             db.close()
 
