@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import os
 import re
+import logging
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
@@ -116,7 +117,7 @@ TIMEZONE = ZoneInfo('America/Argentina/Buenos_Aires')
 def _build_calendar_service():
     sa_json = os.getenv('GOOGLE_SERVICE_ACCOUNT')
     if not sa_json:
-        print("❌ [CALENDAR ERROR]: La variable GOOGLE_SERVICE_ACCOUNT está vacía o no existe en Railway.")
+        logging.warning("❌ [CALENDAR ERROR]: La variable GOOGLE_SERVICE_ACCOUNT está vacía o no existe en Railway.")
         raise EnvironmentError(
             "Falta la variable de entorno GOOGLE_SERVICE_ACCOUNT. "
             "Pegá el JSON completo de la service account en Railway."
@@ -125,15 +126,15 @@ def _build_calendar_service():
     try:
         info = json.loads(sa_json)
     except json.JSONDecodeError as e:
-        print(f"❌ [CALENDAR ERROR]: El JSON de la Service Account tiene un error de formato: {e}")
-        print(f"Contenido recibido (primeros 50 caracteres): {sa_json[:50]}...")
+        logging.warning(f"❌ [CALENDAR ERROR]: El JSON de la Service Account tiene un error de formato: {e}")
+        logging.warning(f"Contenido recibido (primeros 50 caracteres): {sa_json[:50]}...")
         raise
 
     try:
         creds = Credentials.from_service_account_info(info, scopes=SCOPES)
         return build('calendar', 'v3', credentials=creds, cache_discovery=False)
     except Exception as e:
-        print(f"❌ [CALENDAR ERROR]: Error al autenticar con Google: {e}")
+        logging.warning(f"❌ [CALENDAR ERROR]: Error al autenticar con Google: {e}")
         raise
 
 
@@ -257,7 +258,7 @@ def _consultar_calendar(texto_fecha: str, dias: int = 3) -> str:
         return "Turnos disponibles:\n" + "\n".join(f"- {l}" for l in lineas)
 
     except Exception as e:
-        print(f"[❌ CALENDAR ERROR]: {e}")
+        logging.warning(f"[❌ CALENDAR ERROR]: {e}")
         import traceback; traceback.print_exc()
         return "Hubo un problema consultando la agenda. ¿Podés intentar con otra fecha?"
 
@@ -273,7 +274,7 @@ def _is_busy(service, start: datetime, end: datetime) -> bool:
 
 
 def _crear_evento(service, titulo: str, start: datetime, end: datetime, descripcion: str = '') -> str:
-    print(f"📅 [CALENDAR INFO] Intentando crear evento: '{titulo}' desde {start} hasta {end}")
+    logging.warning(f"📅 [CALENDAR INFO] Intentando crear evento: '{titulo}' desde {start} hasta {end}")
     event  = {
         'summary':     titulo,
         'description': descripcion,
@@ -282,12 +283,13 @@ def _crear_evento(service, titulo: str, start: datetime, end: datetime, descripc
     }
     try:
         calendar_id = os.getenv("CALENDAR_ID", "primary")
+        logging.warning(f"📅 [CALENDAR INFO] Usando calendarId: {calendar_id}")
         creado = service.events().insert(calendarId=calendar_id, body=event).execute()
         enlace = creado.get('htmlLink', '')
-        print(f"✅ [CALENDAR SUCCESS] Evento creado con éxito: {enlace}")
+        logging.warning(f"✅ [CALENDAR SUCCESS] Evento creado con éxito: {enlace}")
         return enlace
     except Exception as e:
-        print(f"❌ [CALENDAR ERROR]: Falló la creación del evento en Google Calendar: {e}")
+        logging.warning(f"❌ [CALENDAR ERROR]: Falló la creación del evento en Google Calendar: {e}")
         raise
 
 
@@ -453,7 +455,7 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
                         derivar = "manual"
 
                 except Exception as e:
-                    print(f"[❌ ERROR EN TOOL {tool_name}]: {e}", flush=True)
+                    logging.warning(f"[❌ ERROR EN TOOL {tool_name}]: {e}")
                     import traceback; traceback.print_exc()
                     tool_results.append({
                         "type":        "tool_result",
