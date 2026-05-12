@@ -355,22 +355,30 @@ def _build_available_slots(busy_ranges: list[tuple[datetime, datetime]], start_d
 
 
 def _consultar_calendar(fecha_desde: str, dias: int = 3, texto_fecha: str = None) -> str:
+    print(f"[🔍 CALENDAR] Iniciando consulta: fecha_desde={fecha_desde}, dias={dias}, texto_fecha={texto_fecha}")
     try:
         if texto_fecha:
             parsed = _parse_fecha_desde(texto_fecha)
             if parsed:
                 fecha_inicio = parsed
+                print(f"[🔍 CALENDAR] Fecha parseada de texto: {fecha_inicio}")
             else:
                 fecha_inicio = datetime.now(TIMEZONE).date()
+                print(f"[🔍 CALENDAR] No se pudo parsear texto, usando hoy: {fecha_inicio}")
         else:
             if not fecha_desde:
                 fecha_desde = datetime.now(TIMEZONE).strftime('%Y-%m-%d')
             try:
                 fecha_inicio = datetime.fromisoformat(fecha_desde).date()
+                print(f"[🔍 CALENDAR] Fecha desde ISO: {fecha_inicio}")
             except ValueError:
                 fecha_inicio = datetime.now(TIMEZONE).date()
+                print(f"[🔍 CALENDAR] Fecha desde inválida, usando hoy: {fecha_inicio}")
 
+        print(f"[🔍 CALENDAR] Construyendo servicio...")
         service = _build_calendar_service()
+        print(f"[🔍 CALENDAR] Servicio construido OK")
+
         time_min = datetime(fecha_inicio.year, fecha_inicio.month, fecha_inicio.day, 0, 0, tzinfo=TIMEZONE)
         time_max = time_min + timedelta(days=dias)
         query = {
@@ -379,20 +387,30 @@ def _consultar_calendar(fecha_desde: str, dias: int = 3, texto_fecha: str = None
             'timeZone': str(TIMEZONE),
             'items': [{'id': 'primary'}]
         }
+        print(f"[🔍 CALENDAR] Query freebusy: {query}")
         busy = service.freebusy().query(body=query).execute()['calendars']['primary']['busy']
+        print(f"[🔍 CALENDAR] Busy ranges encontrados: {len(busy)}")
+
         busy_ranges = []
         for item in busy:
             start = _parse_iso_datetime(item['start']).astimezone(TIMEZONE)
             end = _parse_iso_datetime(item['end']).astimezone(TIMEZONE)
             busy_ranges.append((start, end))
 
+        print(f"[🔍 CALENDAR] Building available slots...")
         available_slots = _build_available_slots(busy_ranges, time_min, dias)
+        print(f"[🔍 CALENDAR] Slots disponibles: {len(available_slots)}")
+
         if not available_slots:
-            return f"No hay turnos disponibles en Google Calendar desde {fecha_desde} por {dias} días."
+            result = f"No hay turnos disponibles en Google Calendar desde {fecha_desde} por {dias} días."
+            print(f"[🔍 CALENDAR] Resultado: {result}")
+            return result
 
         opciones = available_slots[:3]
         lineas = [f"- {slot.strftime('%A %d/%m a las %H:%M')}" for slot in opciones]
-        return "Disponibilidad real en Google Calendar:\n" + "\n".join(lineas)
+        result = "Disponibilidad real en Google Calendar:\n" + "\n".join(lineas)
+        print(f"[🔍 CALENDAR] Resultado exitoso: {result}")
+        return result
     except Exception as e:
         print(f"[❌ ERROR CONSULTANDO CALENDAR]: {e}")
         import traceback
@@ -488,64 +506,78 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
             db.add(resp_msg)
 
         for tool in tools_a_ejecutar:
-            if tool["name"] == "consultar_calendar":
-                await enviar_mensaje_wpp(to_number, "Reviso la agenda para esa fecha... Un momento.")
-                fecha_desde = tool["input"].get("fecha_desde", datetime.utcnow().strftime("%Y-%m-%d"))
-                dias = tool["input"].get("dias_a_consultar", 3)
-                texto_fecha = tool["input"].get("texto_fecha")
-                resultado = _consultar_calendar(fecha_desde, dias, texto_fecha)
-                await enviar_mensaje_wpp(to_number, resultado)
-            elif tool["name"] == "iniciar_cobranzas":
-                dia = tool["input"].get("dia", "")
-                hora = tool["input"].get("hora", "")
-                profesional = tool["input"].get("profesional", "")
-                turno_texto = f"{dia} {hora}".strip()
-                start, end = _parse_fecha_hora(turno_texto)
-                if not start or not end:
-                    await enviar_mensaje_wpp(to_number, f"No pude interpretar fecha y hora: '{turno_texto}'. ¿Podés escribir la fecha y hora exactas para confirmar el turno?")
-                    cliente.estado_agente = "agendadora"
+            try:
+                if tool["name"] == "consultar_calendar":
+                    print(f"[🔍 AGENDADORA] Consultando calendar para {to_number}")
+                    await enviar_mensaje_wpp(to_number, "Reviso la agenda para esa fecha... Un momento.")
+                    fecha_desde = tool["input"].get("fecha_desde", datetime.utcnow().strftime("%Y-%m-%d"))
+                    dias = tool["input"].get("dias_a_consultar", 3)
+                    texto_fecha = tool["input"].get("texto_fecha")
+                    print(f"[🔍 AGENDADORA] Parámetros: fecha_desde={fecha_desde}, dias={dias}, texto_fecha={texto_fecha}")
+                    resultado = _consultar_calendar(fecha_desde, dias, texto_fecha)
+                    print(f"[🔍 AGENDADORA] Resultado calendar: {resultado[:100]}...")
+                    await enviar_mensaje_wpp(to_number, resultado)
+                    print(f"[✅ AGENDADORA] Mensaje enviado con resultado calendar")
+                elif tool["name"] == "iniciar_cobranzas":
+                    print(f"[💸 AGENDADORA] Iniciando cobranzas para {to_number}")
+                    dia = tool["input"].get("dia", "")
+                    hora = tool["input"].get("hora", "")
+                    profesional = tool["input"].get("profesional", "")
+                    turno_texto = f"{dia} {hora}".strip()
+                    start, end = _parse_fecha_hora(turno_texto)
+                    if not start or not end:
+                        await enviar_mensaje_wpp(to_number, f"No pude interpretar fecha y hora: '{turno_texto}'. ¿Podés escribir la fecha y hora exactas para confirmar el turno?")
+                        cliente.estado_agente = "agendadora"
+                        db.commit()
+                        continue
+
+                    service = _build_calendar_service()
+                    if _is_busy(service, start, end):
+                        await enviar_mensaje_wpp(to_number, "Ese horario ya está ocupado en Google Calendar. Voy a buscar otra alternativa.")
+                        cliente.estado_agente = "agendadora"
+                        db.commit()
+                        continue
+
+                    descripcion = f"Turno Abriness con {profesional}. Paciente: {cliente.nombre_completo or to_number}."
+                    enlace = _crear_evento_calendar(
+                        f"Turno Abriness - {profesional}",
+                        start,
+                        end,
+                        descripcion
+                    )
+                    confirmacion = f"Perfecto, ya reservé tu turno para {start.strftime('%A %d/%m a las %H:%M')} con {profesional}."
+                    if enlace:
+                        confirmacion += f"\nLo registré en Google Calendar: {enlace}"
+                    await enviar_mensaje_wpp(to_number, confirmacion)
+
+                    print(f"[💸 AGENDADORA] Turno reservado {start} - {end} con {profesional}. Derivando a cobranzas...")
+                    from services.cobranza import iniciar_cobranzas as iniciar_cobranzas_svc
+                    await iniciar_cobranzas_svc(to_number)
+                    cliente.estado_agente = "manual"
                     db.commit()
-                    continue
-
-                service = _build_calendar_service()
-                if _is_busy(service, start, end):
-                    await enviar_mensaje_wpp(to_number, "Ese horario ya está ocupado en Google Calendar. Voy a buscar otra alternativa.")
-                    cliente.estado_agente = "agendadora"
+                elif tool["name"] == "volver_secretaria_principal":
+                    print(f"[🔄 SWITCH] Cliente {to_number} → 'principal'")
+                    cliente.estado_agente = "principal"
                     db.commit()
-                    continue
-
-                descripcion = f"Turno Abriness con {profesional}. Paciente: {cliente.nombre_completo or to_number}."
-                enlace = _crear_evento_calendar(
-                    f"Turno Abriness - {profesional}",
-                    start,
-                    end,
-                    descripcion
-                )
-                confirmacion = f"Perfecto, ya reservé tu turno para {start.strftime('%A %d/%m a las %H:%M')} con {profesional}."
-                if enlace:
-                    confirmacion += f"\nLo registré en Google Calendar: {enlace}"
-                await enviar_mensaje_wpp(to_number, confirmacion)
-
-                print(f"[💸 AGENDADORA] Turno reservado {start} - {end} con {profesional}. Derivando a cobranzas...")
-                from services.cobranza import iniciar_cobranzas as iniciar_cobranzas_svc
-                await iniciar_cobranzas_svc(to_number)
-                cliente.estado_agente = "manual"
-                db.commit()
-            elif tool["name"] == "volver_secretaria_principal":
-                print(f"[🔄 SWITCH] Cliente {to_number} → 'principal'")
-                cliente.estado_agente = "principal"
-                db.commit()
-            elif tool["name"] == "notificar_walter_urgente":
-                es_emergencia = tool["input"].get("es_emergencia", False)
-                print(f"[🚨 URGENCIA AGENDADORA] Derivando a Walter. Emergencia: {es_emergencia}")
-                cliente.estado_agente = "manual"
-                
-                from services.secretaria_principal import enviar_notificacion_a_walter
-                nombre_cliente = cliente.nombre_completo or (cliente.datos_extraidos or {}).get("nombre_contacto", "un paciente")
-                await enviar_notificacion_a_walter(to_number, nombre_cliente)
+                elif tool["name"] == "notificar_walter_urgente":
+                    es_emergencia = tool["input"].get("es_emergencia", False)
+                    print(f"[🚨 URGENCIA AGENDADORA] Derivando a Walter. Emergencia: {es_emergencia}")
+                    cliente.estado_agente = "manual"
+                    
+                    from services.secretaria_principal import enviar_notificacion_a_walter
+                    nombre_cliente = cliente.nombre_completo or (cliente.datos_extraidos or {}).get("nombre_contacto", "un paciente")
+                    await enviar_notificacion_a_walter(to_number, nombre_cliente)
+                    db.commit()
+            except Exception as e:
+                print(f"[❌ ERROR EJECUTANDO TOOL {tool['name']}]: {e}")
+                import traceback
+                traceback.print_exc()
+                await enviar_mensaje_wpp(to_number, "Perdón, hubo un problema procesando tu solicitud. ¿Podés intentarlo de nuevo?")
+                cliente.estado_agente = "agendadora"
                 db.commit()
         
         db.commit()
+        print(f"[✅ AGENDADORA] Proceso completado para {to_number}")
         
     except Exception as e:
         print(f"\n[❌ ERROR AGENDADORA]: {e}")
