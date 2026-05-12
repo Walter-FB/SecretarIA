@@ -6,8 +6,16 @@
 from database import SessionLocal
 from models import Cliente, Mensaje
 from services.secretaria_principal import enviar_mensaje_wpp, marcar_leido_wpp, client_claude
-from datetime import datetime, timedelta
+import json
+from datetime import datetime, timedelta, time
+from zoneinfo import ZoneInfo
+import os.path
 import os
+import re
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
 
 # ===================================================================
 # PROMPT DE LA AGENDADORA (corto, solo agenda)
@@ -90,6 +98,7 @@ TOOLS_AGENDADORA = [
             "type": "object",
             "properties": {
                 "fecha_desde": {"type": "string", "description": "Fecha desde (YYYY-MM-DD)"},
+                "texto_fecha": {"type": "string", "description": "Fecha en lenguaje natural, por ejemplo 'mañana a las 10'"},
                 "dias_a_consultar": {"type": "integer", "description": "Cantidad de días (default: 3)"}
             },
             "required": ["fecha_desde"]
@@ -131,21 +140,231 @@ TOOLS_AGENDADORA = [
 
 
 # ===================================================================
-# STUBS DE GOOGLE CALENDAR — TODO: Implementar con API real
+# GOOGLE CALENDAR / AUTH HELPERS
 # ===================================================================
-async def _stub_consultar_calendar(fecha_desde: str, dias: int = 3) -> str:
-    # TODO: google-api-python-client con Service Account credentials
-    print(f"[📅 CALENDAR STUB] Consultando desde {fecha_desde} ({dias} días)")
-    return f"Walter tiene disponibilidad mañana a las 10:00, 14:00 y 16:00. Pasado mañana a las 11:00 y 15:00."
 
-async def _stub_crear_evento(titulo: str, fecha_hora: str, duracion: int = 30) -> str:
-    # TODO: service.events().insert(calendarId='primary', body=event).execute()
-    print(f"[📅 CALENDAR STUB] Evento creado: '{titulo}' el {fecha_hora} ({duracion} min)")
-    return f"Evento creado: {titulo} — {fecha_hora}"
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+SCOPES = ['https://www.googleapis.com/auth/calendar.events']
+TIMEZONE = ZoneInfo('America/Argentina/Buenos_Aires')
 
-async def _stub_notificar_walter_reunion(resumen: str):
-    # TODO: enviar_mensaje_wpp(NUMERO_WALTER, resumen)
-    print(f"[📩 NOTIF WALTER STUB] {resumen}")
+
+def _get_path(env_name: str, default_name: str) -> str:
+    return os.getenv(env_name, os.path.join(BASE_DIR, default_name))
+
+
+def _load_google_credentials() -> Credentials:
+    token_path = _get_path('GOOGLE_TOKEN_JSON', 'token.json')
+    creds_path = _get_path('GOOGLE_CREDENTIALS_JSON', 'credentials.json')
+    google_credentials_env = os.getenv('GOOGLE_CREDENTIALS')
+
+    creds = None
+    if os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            client_config = None
+            if google_credentials_env:
+                try:
+                    config_data = json.loads(google_credentials_env)
+                    client_config = config_data
+                except json.JSONDecodeError as e:
+                    raise ValueError(f"No se pudo parsear GOOGLE_CREDENTIALS: {e}")
+
+            if client_config is not None:
+                flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+            else:
+                if not os.path.exists(creds_path):
+                    raise FileNotFoundError(f"No se encontró el archivo de credenciales: {creds_path}")
+                flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
+
+            creds = flow.run_local_server(port=8080)
+
+        with open(token_path, 'w', encoding='utf-8') as token_file:
+            token_file.write(creds.to_json())
+
+    return creds
+
+
+def _build_calendar_service():
+    creds = _load_google_credentials()
+    return build('calendar', 'v3', credentials=creds, cache_discovery=False)
+
+
+def _parse_iso_datetime(value: str) -> datetime:
+    if value.endswith('Z'):
+        value = value[:-1] + '+00:00'
+    return datetime.fromisoformat(value)
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r'[^a-z0-9áéíóúüñ\s/\-:\.]', ' ', text.lower())
+
+
+def _parse_fecha_hora(texto: str, timezone: ZoneInfo = TIMEZONE) -> tuple[datetime, datetime] | tuple[None, None]:
+    if not texto:
+        return None, None
+
+    texto = texto.lower().replace('pasado manana', 'pasado mañana').replace('pasado mañana', 'pasado mañana').replace('hoy', 'hoy')
+    texto = texto.replace(' a las ', ' ').replace(' hs', ' ').replace(' horas', ' ')
+    texto = _normalize_text(texto)
+
+    hoy = datetime.now(timezone).date()
+    fecha = None
+
+    if 'pasado manana' in texto or 'pasado mañana' in texto:
+        fecha = hoy + timedelta(days=2)
+    elif 'mañana' in texto:
+        fecha = hoy + timedelta(days=1)
+    elif 'hoy' in texto:
+        fecha = hoy
+    else:
+        weekdays = {
+            'lunes': 0, 'martes': 1, 'miercoles': 2, 'jueves': 3,
+            'viernes': 4, 'sabado': 5, 'domingo': 6
+        }
+        for nombre, target in weekdays.items():
+            if nombre in texto:
+                hoy_weekday = hoy.weekday()
+                delta = (target - hoy_weekday) % 7
+                if delta == 0:
+                    delta = 7
+                fecha = hoy + timedelta(days=delta)
+                break
+
+    if fecha is None:
+        match = re.search(r'(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?', texto)
+        if match:
+            dia = int(match.group(1))
+            mes = int(match.group(2))
+            anio = int(match.group(3)) if match.group(3) else hoy.year
+            if anio < 100:
+                anio += 2000
+            try:
+                fecha = datetime(anio, mes, dia).date()
+            except ValueError:
+                fecha = None
+
+    if fecha is None:
+        meses = {
+            'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4,
+            'mayo': 5, 'junio': 6, 'julio': 7, 'agosto': 8,
+            'septiembre': 9, 'octubre': 10, 'noviembre': 11, 'diciembre': 12
+        }
+        for nombre, mes in meses.items():
+            if nombre in texto:
+                dia_match = re.search(r'(\d{1,2})', texto)
+                if dia_match:
+                    dia = int(dia_match.group(1))
+                    try:
+                        fecha = datetime(hoy.year, mes, dia).date()
+                    except ValueError:
+                        fecha = None
+                        continue
+                    if fecha < hoy:
+                        fecha = datetime(hoy.year + 1, mes, dia).date()
+                break
+
+    if fecha is None:
+        return None, None
+
+    hora = 10
+    minuto = 0
+    hora_match = re.search(r'(\d{1,2})(?::(\d{2}))?', texto)
+    if hora_match:
+        hora = int(hora_match.group(1))
+        minuto = int(hora_match.group(2)) if hora_match.group(2) else 0
+        if hora < 7:
+            hora += 12
+
+    start = datetime(fecha.year, fecha.month, fecha.day, hora, minuto, tzinfo=timezone)
+    end = start + timedelta(hours=1)
+    return start, end
+
+
+def _is_busy(service, start: datetime, end: datetime) -> bool:
+    query = {
+        'timeMin': start.isoformat(),
+        'timeMax': end.isoformat(),
+        'timeZone': str(TIMEZONE),
+        'items': [{'id': 'primary'}]
+    }
+    busy = service.freebusy().query(body=query).execute()['calendars']['primary']['busy']
+    return len(busy) > 0
+
+
+def _format_day(dt: datetime) -> str:
+    return dt.strftime('%A %d/%m').capitalize()
+
+
+def _format_slot(dt: datetime) -> str:
+    return dt.strftime('%A %d/%m a las %H:%M').capitalize()
+
+
+def _build_available_slots(busy_ranges: list[tuple[datetime, datetime]], start_date: datetime, days: int = 3) -> list[datetime]:
+    slots = []
+    for day_offset in range(days):
+        day = (start_date + timedelta(days=day_offset)).date()
+        cursor = datetime(day.year, day.month, day.day, 9, 0, tzinfo=TIMEZONE)
+        end_of_day = datetime(day.year, day.month, day.day, 18, 0, tzinfo=TIMEZONE)
+        while cursor + timedelta(hours=1) <= end_of_day and len(slots) < 6:
+            candidate_end = cursor + timedelta(hours=1)
+            overlap = any(not (candidate_end <= busy_start or cursor >= busy_end) for busy_start, busy_end in busy_ranges)
+            if not overlap:
+                slots.append(cursor)
+            cursor += timedelta(minutes=30)
+    return slots
+
+
+def _consultar_calendar(fecha_desde: str, dias: int = 3) -> str:
+    if not fecha_desde:
+        fecha_desde = datetime.now(TIMEZONE).strftime('%Y-%m-%d')
+    try:
+        fecha_inicio = datetime.fromisoformat(fecha_desde).date()
+    except ValueError:
+        fecha_inicio = datetime.now(TIMEZONE).date()
+
+    service = _build_calendar_service()
+    time_min = datetime(fecha_inicio.year, fecha_inicio.month, fecha_inicio.day, 0, 0, tzinfo=TIMEZONE)
+    time_max = time_min + timedelta(days=dias)
+    query = {
+        'timeMin': time_min.isoformat(),
+        'timeMax': time_max.isoformat(),
+        'timeZone': str(TIMEZONE),
+        'items': [{'id': 'primary'}]
+    }
+    busy = service.freebusy().query(body=query).execute()['calendars']['primary']['busy']
+    busy_ranges = []
+    for item in busy:
+        start = _parse_iso_datetime(item['start']).astimezone(TIMEZONE)
+        end = _parse_iso_datetime(item['end']).astimezone(TIMEZONE)
+        busy_ranges.append((start, end))
+
+    available_slots = _build_available_slots(busy_ranges, time_min, dias)
+    if not available_slots:
+        return f"No hay turnos disponibles en Google Calendar desde {fecha_desde} por {dias} días."
+
+    opciones = available_slots[:3]
+    lineas = [f"- {slot.strftime('%A %d/%m a las %H:%M')}" for slot in opciones]
+    return "Disponibilidad real en Google Calendar:\n" + "\n".join(lineas)
+
+
+def _crear_evento_calendar(titulo: str, start: datetime, end: datetime, descripcion: str = '') -> str:
+    service = _build_calendar_service()
+    event = {
+        'summary': titulo,
+        'description': descripcion,
+        'start': {'dateTime': start.isoformat(), 'timeZone': str(TIMEZONE)},
+        'end': {'dateTime': end.isoformat(), 'timeZone': str(TIMEZONE)}
+    }
+    creado = service.events().insert(calendarId='primary', body=event).execute()
+    return creado.get('htmlLink', '')
+
+
+def _build_nome_from_cliente(cliente: Cliente) -> str:
+    return cliente.nombre_completo or cliente.telefono or 'Paciente'
 
 
 # ===================================================================
@@ -212,20 +431,45 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
         
         for tool in tools_a_ejecutar:
             if tool["name"] == "consultar_calendar":
-                resultado = await _stub_consultar_calendar(
-                    tool["input"].get("fecha_desde", datetime.utcnow().strftime("%Y-%m-%d")),
-                    tool["input"].get("dias_a_consultar", 3)
-                )
+                fecha_desde = tool["input"].get("fecha_desde", datetime.utcnow().strftime("%Y-%m-%d"))
+                dias = tool["input"].get("dias_a_consultar", 3)
+                resultado = _consultar_calendar(fecha_desde, dias)
                 await enviar_mensaje_wpp(to_number, resultado)
             elif tool["name"] == "iniciar_cobranzas":
                 dia = tool["input"].get("dia", "")
                 hora = tool["input"].get("hora", "")
                 profesional = tool["input"].get("profesional", "")
-                print(f"[💸 AGENDADORA] Turno pre-reservado {dia} a las {hora} con {profesional}. Derivando a cobranzas...")
-                
+                turno_texto = f"{dia} {hora}".strip()
+                start, end = _parse_fecha_hora(turno_texto)
+                if not start or not end:
+                    await enviar_mensaje_wpp(to_number, f"No pude interpretar fecha y hora: '{turno_texto}'. ¿Podés escribir la fecha y hora exactas para confirmar el turno?")
+                    cliente.estado_agente = "agendadora"
+                    db.commit()
+                    continue
+
+                service = _build_calendar_service()
+                if _is_busy(service, start, end):
+                    await enviar_mensaje_wpp(to_number, "Ese horario ya está ocupado en Google Calendar. Voy a buscar otra alternativa.")
+                    cliente.estado_agente = "agendadora"
+                    db.commit()
+                    continue
+
+                descripcion = f"Turno Abriness con {profesional}. Paciente: {cliente.nombre_completo or to_number}."
+                enlace = _crear_evento_calendar(
+                    f"Turno Abriness - {profesional}",
+                    start,
+                    end,
+                    descripcion
+                )
+                confirmacion = f"Perfecto, ya reservé tu turno para {start.strftime('%A %d/%m a las %H:%M')} con {profesional}."
+                if enlace:
+                    confirmacion += f"\nLo registré en Google Calendar: {enlace}"
+                await enviar_mensaje_wpp(to_number, confirmacion)
+
+                print(f"[💸 AGENDADORA] Turno reservado {start} - {end} con {profesional}. Derivando a cobranzas...")
                 from services.cobranza import iniciar_cobranzas as iniciar_cobranzas_svc
                 await iniciar_cobranzas_svc(to_number)
-                cliente.estado_agente = "manual"  # O el estado que maneje cobranzas
+                cliente.estado_agente = "manual"
                 db.commit()
             elif tool["name"] == "volver_secretaria_principal":
                 print(f"[🔄 SWITCH] Cliente {to_number} → 'principal'")

@@ -386,6 +386,16 @@ async def _ejecutar_tool_principal(db, cliente, to_number: str, tool: dict):
 
         await enviar_mensaje_wpp(to_number, "Dale, dejame revisar la agenda para coordinar día y hora. Un segundo...")
 
+        try:
+            from services.agendadora import secretaria_agendadora
+            await secretaria_agendadora(
+                f"Iniciar agendamiento para especialidad {especialidad} con cobertura {cobertura}.",
+                to_number,
+                None
+            )
+        except Exception as e:
+            print(f"[❌ ERROR al iniciar agendadora] {e}")
+
     elif tool["name"] == "iniciar_cobranzas":
         print(f"[💸 COBRANZAS] Derivando a cobranzas: {to_number}")
         from services.cobranza import iniciar_cobranzas as iniciar_cobranzas_svc
