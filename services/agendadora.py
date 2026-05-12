@@ -166,9 +166,11 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
         cliente.mensajes_enviados += 1
         print(f"\n[AGENDADORA - {to_number}]: {user_text}")
         
+        hace_6_horas = datetime.utcnow() - timedelta(hours=6)
         mensajes_recientes = db.query(Mensaje).filter(
-            Mensaje.cliente_id == cliente.id
-        ).order_by(Mensaje.fecha_creacion.desc()).limit(3).all()
+            Mensaje.cliente_id == cliente.id,
+            Mensaje.fecha_creacion >= hace_6_horas
+        ).order_by(Mensaje.fecha_creacion.desc()).limit(20).all()
         
         historial_claude = []
         for m in reversed(mensajes_recientes):

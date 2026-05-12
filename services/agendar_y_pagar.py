@@ -89,7 +89,7 @@ async def secretaria_agendar_y_pagar(user_text: str, to_number: str, msg_id: str
         # Historial corto (3 mensajes)
         mensajes_recientes = db.query(Mensaje).filter(
             Mensaje.cliente_id == cliente.id
-        ).order_by(Mensaje.fecha_creacion.desc()).limit(3).all()
+        ).order_by(Mensaje.fecha_creacion.desc()).limit(20).all()
         
         historial_claude = []
         for m in reversed(mensajes_recientes):

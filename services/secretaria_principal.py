@@ -64,6 +64,8 @@ Si detectás crisis, desesperación, pensamientos de daño o urgencia emocional:
 </EMERGENCIA>
 
 <CHARLA_MODELO>
+
+si no te preguntan nada en concreto inicias la charla con un: Hola! Soy Abby, asistente de la Clínica Abriness, en que puedo ayudarte? (siempre de manera servicial)
 — Flujo estándar primera vez —
 P: Hola, quiero agendar un turno.
 A: Hola! Soy Abby. ¿Con qué especialidad te querés atender, psicología o psiquiatría?
@@ -272,7 +274,7 @@ async def secretaria_principal(user_text: str, to_number: str, msg_id: str = Non
         mensajes_sesion = db.query(Mensaje).filter(
             Mensaje.cliente_id == cliente.id,
             Mensaje.fecha_creacion >= hace_6_horas
-        ).order_by(Mensaje.fecha_creacion.desc()).limit(10).all()
+        ).order_by(Mensaje.fecha_creacion.desc()).limit(40).all()
 
         # Armamos el historial para Claude (orden cronológico)
         historial_claude = []
