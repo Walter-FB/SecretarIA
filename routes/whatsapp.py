@@ -73,7 +73,8 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         try:
             cliente = db.query(Cliente).filter(Cliente.telefono == phone_number).first()
             mensajes_enviados = cliente.mensajes_enviados if cliente else 0
-            estado_agente = cliente.estado_agente if cliente else "principal"
+            # IMPORTANTE: Cambiamos a 'agendadora' por defecto si el cliente no existe
+            estado_agente = cliente.estado_agente if cliente else "agendadora"
         finally:
             db.close()
 
@@ -84,11 +85,15 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         # -------------------------------------------------------
         # EL SWITCH — Rutea según estado_agente
         # -------------------------------------------------------
+        print(f"🚦 [ROUTER] Mensaje recibido de {phone_number}. Estado: {estado_agente}")
+        
         if estado_agente == "principal":
+            print(f"➡️ [ROUTER] Derivando a secretaria_principal")
             from services.secretaria_principal import secretaria_principal
             background_tasks.add_task(secretaria_principal, text, phone_number, msg_id)
 
         elif estado_agente == "agendadora":
+            print(f"➡️ [ROUTER] Derivando a secretaria_agendadora")
             from services.agendadora import secretaria_agendadora
             background_tasks.add_task(secretaria_agendadora, text, phone_number, msg_id)
 

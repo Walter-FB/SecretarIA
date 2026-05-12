@@ -296,14 +296,26 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
     Loop correcto: Claude llama tool → ejecutamos → devolvemos tool_result a Claude
     → Claude formula la respuesta final para el usuario.
     """
-    await marcar_leido_wpp(msg_id)
+    print(f"🚀 [INIT AGENDADORA] Entrando a la función para el número {to_number}")
+    print(f"💬 [INIT AGENDADORA] Mensaje recibido: {user_text}")
+    
+    try:
+        await marcar_leido_wpp(msg_id)
+        print(f"✅ [INIT AGENDADORA] Mensaje marcado como leído.")
+    except Exception as e:
+        print(f"⚠️ [INIT AGENDADORA] Falló marcar_leido_wpp: {e}")
 
     db = SessionLocal()
     try:
+        print(f"🔍 [INIT AGENDADORA] Buscando cliente en DB...")
         cliente = db.query(Cliente).filter(Cliente.telefono == to_number).first()
         if not cliente:
-            print(f"[⚠️ AGENDADORA] Cliente {to_number} no encontrado.")
-            return
+            print(f"[⚠️ AGENDADORA] Cliente {to_number} no encontrado. Creándolo automáticamente...")
+            from init_db import EMPRESA_DEFAULT_ID
+            cliente = Cliente(telefono=to_number, empresa_id=EMPRESA_DEFAULT_ID, estado_agente="agendadora")
+            db.add(cliente)
+            db.commit()
+            db.refresh(cliente)
 
         cliente.mensajes_enviados += 1
         print(f"\n[AGENDADORA - {to_number}]: {user_text}")
