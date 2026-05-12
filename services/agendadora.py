@@ -264,12 +264,13 @@ def _consultar_calendar(texto_fecha: str, dias: int = 3) -> str:
 
 
 def _is_busy(service, start: datetime, end: datetime) -> bool:
+    calendar_id = os.getenv("CALENDAR_ID", "primary")
     busy = service.freebusy().query(body={
         'timeMin':  start.isoformat(),
         'timeMax':  end.isoformat(),
         'timeZone': str(TIMEZONE),
-        'items':    [{'id': 'primary'}]
-    }).execute()['calendars']['primary']['busy']
+        'items':    [{'id': calendar_id}]
+    }).execute()['calendars'][calendar_id]['busy']
     return len(busy) > 0
 
 
@@ -301,21 +302,23 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
     Loop correcto: Claude llama tool → ejecutamos → devolvemos tool_result a Claude
     → Claude formula la respuesta final para el usuario.
     """
-    print(f"🚀 [INIT AGENDADORA] Entrando a la función para el número {to_number}")
-    print(f"💬 [INIT AGENDADORA] Mensaje recibido: {user_text}")
+    import logging
+    logging.warning(f"🚀🚀🚀 [AGENDADORA EJECUTADA] Recibimos mensaje de {to_number}: '{user_text}' 🚀🚀🚀")
+    logging.warning(f"🚀 [INIT AGENDADORA] Entrando a la función para el número {to_number}")
+    logging.warning(f"💬 [INIT AGENDADORA] Mensaje recibido: {user_text}")
     
     try:
         await marcar_leido_wpp(msg_id)
-        print(f"✅ [INIT AGENDADORA] Mensaje marcado como leído.")
+        logging.warning(f"✅ [INIT AGENDADORA] Mensaje marcado como leído.")
     except Exception as e:
-        print(f"⚠️ [INIT AGENDADORA] Falló marcar_leido_wpp: {e}")
+        logging.warning(f"⚠️ [INIT AGENDADORA] Falló marcar_leido_wpp: {e}")
 
     db = SessionLocal()
     try:
-        print(f"🔍 [INIT AGENDADORA] Buscando cliente en DB...")
+        logging.warning(f"🔍 [INIT AGENDADORA] Buscando cliente en DB...")
         cliente = db.query(Cliente).filter(Cliente.telefono == to_number).first()
         if not cliente:
-            print(f"[⚠️ AGENDADORA] Cliente {to_number} no encontrado. Creándolo automáticamente...")
+            logging.warning(f"[⚠️ AGENDADORA] Cliente {to_number} no encontrado. Creándolo automáticamente...")
             from init_db import EMPRESA_DEFAULT_ID
             cliente = Cliente(telefono=to_number, empresa_id=EMPRESA_DEFAULT_ID, estado_agente="agendadora")
             db.add(cliente)
@@ -323,7 +326,7 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
             db.refresh(cliente)
 
         cliente.mensajes_enviados += 1
-        print(f"\n[AGENDADORA - {to_number}]: {user_text}")
+        logging.warning(f"\n[AGENDADORA - {to_number}]: {user_text}")
 
         # Historial reciente (últimas 6 horas, máx 20 mensajes)
         hace_6h = datetime.utcnow() - timedelta(hours=6)
@@ -368,7 +371,7 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
             # Si Claude respondió con texto Y sin tools → respuesta final
             if texto_bloques and not tool_bloques:
                 texto_respuesta = " ".join(b.text.strip() for b in texto_bloques)
-                print(f"[AGENDADORA]: {texto_respuesta}")
+                logging.warning(f"[AGENDADORA]: {texto_respuesta}")
                 await enviar_mensaje_wpp(to_number, texto_respuesta)
                 db.add(Mensaje(cliente_id=cliente.id, rol="asistente", texto=texto_respuesta))
                 break
@@ -393,7 +396,7 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
             for tool in tool_bloques:
                 tool_name  = tool.name
                 tool_input = tool.input
-                print(f"[🔧 TOOL]: {tool_name} | input: {tool_input}")
+                logging.warning(f"[🔧 TOOL]: {tool_name} | input: {tool_input}")
 
                 try:
                     if tool_name == "consultar_calendar":
@@ -480,10 +483,10 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
                 break
 
         db.commit()
-        print(f"[✅ AGENDADORA] Proceso completado para {to_number}")
+        logging.warning(f"[✅ AGENDADORA] Proceso completado para {to_number}")
 
     except Exception as e:
-        print(f"\n[❌ ERROR AGENDADORA]: {e}", flush=True)
+        logging.warning(f"\n[❌ ERROR AGENDADORA]: {e}")
         import traceback; traceback.print_exc()
         try:
             await enviar_mensaje_wpp(to_number, "Perdón, hubo un problema revisando la agenda. ¿Podés decirme otra fecha o horario?")
