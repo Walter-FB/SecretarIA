@@ -48,9 +48,9 @@ class Cliente(Base):
     
     empresa = relationship("Empresa", back_populates="clientes")
     mensajes = relationship("Mensaje", back_populates="cliente", cascade="all, delete-orphan")
-    cola_analisis = relationship("ColaAnalisis", back_populates="cliente", uselist=False)
-    seguimientos = relationship("Seguimiento", back_populates="cliente")
-    pagos = relationship("Pago", back_populates="cliente")
+    cola_analisis = relationship("ColaAnalisis", back_populates="cliente", uselist=False, cascade="all, delete-orphan")
+    seguimientos = relationship("Seguimiento", back_populates="cliente", cascade="all, delete-orphan")
+    pagos = relationship("Pago", back_populates="cliente", cascade="all, delete-orphan")
 
 class Mensaje(Base):
     __tablename__ = "mensajes"

@@ -47,6 +47,26 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         msg_id = message.get("id")
 
         # -------------------------------------------------------
+        # COMANDO SECRETO PARA TESTEO: /borrarChat
+        # -------------------------------------------------------
+        if text.strip() == "/borrarChat":
+            db = SessionLocal()
+            try:
+                cliente_borrar = db.query(Cliente).filter(Cliente.telefono == phone_number).first()
+                if cliente_borrar:
+                    db.delete(cliente_borrar)
+                    db.commit()
+                    print(f"🧹 [RESET] Cliente {phone_number} eliminado de la base de datos.")
+                    # Avisarle por WhatsApp
+                    from services.secretaria_principal import enviar_mensaje_wpp
+                    background_tasks.add_task(enviar_mensaje_wpp, phone_number, "✅ Memoria borrada con éxito. Soy un bot 100% nuevo. Mandame un mensaje para arrancar de cero.")
+                return Response(content="OK", status_code=200)
+            except Exception as e:
+                print(f"Error al borrar cliente: {e}")
+            finally:
+                db.close()
+
+        # -------------------------------------------------------
         # ANTI-SPAM: Leer contador desde PostgreSQL
         # -------------------------------------------------------
         db = SessionLocal()
