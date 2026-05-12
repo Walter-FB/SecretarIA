@@ -221,13 +221,15 @@ def _consultar_calendar(texto_fecha: str, dias: int = 3) -> str:
         service  = _build_calendar_service()
         time_min = fecha_inicio
         time_max = fecha_inicio + timedelta(days=dias)
+        
+        calendar_id = os.getenv("CALENDAR_ID", "primary")
 
         busy_raw = service.freebusy().query(body={
             'timeMin':  time_min.isoformat(),
             'timeMax':  time_max.isoformat(),
             'timeZone': str(TIMEZONE),
-            'items':    [{'id': 'primary'}]
-        }).execute()['calendars']['primary']['busy']
+            'items':    [{'id': calendar_id}]
+        }).execute()['calendars'][calendar_id]['busy']
 
         busy_ranges = []
         for item in busy_raw:
@@ -279,7 +281,8 @@ def _crear_evento(service, titulo: str, start: datetime, end: datetime, descripc
         'end':   {'dateTime': end.isoformat(),   'timeZone': str(TIMEZONE)}
     }
     try:
-        creado = service.events().insert(calendarId='primary', body=event).execute()
+        calendar_id = os.getenv("CALENDAR_ID", "primary")
+        creado = service.events().insert(calendarId=calendar_id, body=event).execute()
         enlace = creado.get('htmlLink', '')
         print(f"✅ [CALENDAR SUCCESS] Evento creado con éxito: {enlace}")
         return enlace
