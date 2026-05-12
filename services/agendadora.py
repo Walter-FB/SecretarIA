@@ -180,7 +180,19 @@ def _load_google_credentials() -> Credentials:
                     raise FileNotFoundError(f"No se encontró el archivo de credenciales: {creds_path}")
                 flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
 
-            creds = flow.run_local_server(port=8080)
+            auth_mode = os.getenv('GOOGLE_AUTH_MODE', 'local').lower()
+            if auth_mode == 'console':
+                creds = flow.run_console()
+            else:
+                port_env = os.getenv('GOOGLE_AUTH_PORT')
+                try:
+                    port = int(port_env) if port_env and port_env.isdigit() else 0
+                except ValueError:
+                    port = 0
+                try:
+                    creds = flow.run_local_server(port=port, open_browser=False)
+                except OSError:
+                    creds = flow.run_console()
 
         with open(token_path, 'w', encoding='utf-8') as token_file:
             token_file.write(creds.to_json())
