@@ -1,28 +1,27 @@
 # ===================================================================
-# SECRETARIA AGENDADORA
-# Contexto limpio. Solo coordina día y hora con Google Calendar.
-# Cuando termina, devuelve el control a la Principal.
+# SECRETARIA AGENDADORA — versión corregida
+# Fixes:
+#   1. Loop de tool_use/tool_result correcto (Claude recibe el resultado
+#      del calendario y puede formular una respuesta natural)
+#   2. Autenticación Google via Service Account (sin OAuth interactivo,
+#      funciona en Railway/producción sin navegador)
 # ===================================================================
 from database import SessionLocal
 from models import Cliente, Mensaje
 from services.secretaria_principal import enviar_mensaje_wpp, marcar_leido_wpp, client_claude
 import json
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import os.path
 import os
 import re
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
 # ===================================================================
-# PROMPT DE LA AGENDADORA (corto, solo agenda)
+# PROMPT
 # ===================================================================
 SYSTEM_PROMPT_AGENDADORA = """<IDENTIDAD>
-Sos la secretaria de agenda de la Clínica Abriness. El paciente ya fue atendido por Abby y está listo para coordinar su turno. Tenés todos sus datos cargados en el sistema.
-
+Sos la secretaria de agenda de la Clínica Abriness. El paciente ya fue atendido por Abby y está listo para coordinar su turno.
 Tu único trabajo es coordinar el turno, confirmar el pago y cerrar. Nada más.
 Mensajes cortos, sin markdown, sin **, sin -.
 </IDENTIDAD>
@@ -33,87 +32,56 @@ Cálido, eficiente, al grano. Usás "vos". Una pregunta por mensaje. Sin emojis 
 
 <TU_TRABAJO>
 1. Siempre consultá disponibilidad real con consultar_calendar antes de proponer horarios.
-2. Si el paciente menciona una fecha o un concepto de tiempo, usá eso para consultar el calendario: hoy, mañana, pasado mañana, este lunes, el próximo martes, 16 de mayo, 14/05, etc.
-3. Si el paciente dice "mañana" o "pasado mañana", interpretalo como una fecha concreta y llamá a consultar_calendar con texto_fecha.
-4. Si no tiene fecha clara, preguntá: "¿Te queda mejor hoy, mañana, pasado mañana o otro día específico?"
-5. Si el paciente responde solo con una fecha parcial, pedí la hora exacta de forma breve.
-6. Respondé siempre con texto visible, aunque uses herramientas. No te quedes en silencio.
-7. Cuando el paciente elija, confirmá el resumen del turno y derivá a cobranzas.
-
-Tu trabajo termina cuando el paciente acepta pagar. De ahí en adelante es cobranzas.
+2. Si el paciente menciona una fecha o concepto de tiempo (hoy, mañana, pasado mañana, el lunes, 16 de mayo, etc.), usá eso para consultar el calendario.
+3. Si no tiene fecha clara, preguntá: "¿Te queda mejor hoy, mañana, pasado mañana o un día específico?"
+4. Respondé siempre con texto visible, aunque uses herramientas. No te quedes en silencio.
+5. Cuando el paciente elija un turno, confirmá el resumen y derivá a cobranzas.
+Tu trabajo termina cuando el paciente acepta pagar.
 </TU_TRABAJO>
 
 <DERIVACIONES>
-PACIENTE ACEPTA PAGAR → iniciar_cobranzas
-Confirmás el turno elegido y derivás. Pasás día, hora y profesional.
-
-TEMA SE DESVÍA O PACIENTE QUIERE VOLVER → volver_secretaria_principal
-Si el paciente pregunta algo fuera del agendamiento o quiere hablar con Abby de nuevo.
-
+PACIENTE ACEPTA PAGAR → iniciar_cobranzas (pasás día, hora y profesional)
+TEMA SE DESVÍA → volver_secretaria_principal
 EMERGENCIA O CRISIS → notificar_walter_urgente (es_emergencia: true)
-Igual que siempre, prioridad absoluta.
 </DERIVACIONES>
 
 <EMERGENCIA>
-Si detectás crisis, desesperación o urgencia emocional:
-1. Cortá el flujo
-2. "Entiendo que estás pasando por un momento muy difícil. Voy a conectarte con alguien del equipo ahora. Si es urgente, llamá al 135 o dirigite a la guardia más cercana."
-3. notificar_walter_urgente con es_emergencia: true
-</EMERGENCIA>
-
-<CHARLA_MODELO>
-A: Hola! Los turnos más próximos disponibles son:
-- Lunes 14 a las 10hs con el Lic. Renals
-- Miércoles 16 a las 15hs con el Lic. Renals
-- Jueves 17 a las 11hs con el Lic. Renals
-¿Alguno te queda bien?
-P: El miércoles a las 3.
-A: Perfecto. Tu turno sería el miércoles 16 a las 15hs con el Lic. Renals. Para efectivizarlo necesitás abonar la consulta previamente. ¿Avanzamos con el pago?
-P: Sí.
-[→ iniciar_cobranzas con día: miércoles 16, hora: 15hs, profesional: Lic. Renals]
-
-— Paciente se desvía —
-P: Disculpa, pero tengo una consulta sobre otra cosa.
-A: Sin problema, te vuelvo a conectar con Abby.
-[→ volver_secretaria_principal]
-
-— Paciente no acepta pagar —
-P: No, prefiero pagarlo el día que voy.
-A: Entendido. El turno queda pre-reservado pero se confirma con el pago previo. ¿Querés que te contactemos para coordinar eso?
-[→ notificar_walter_urgente con es_emergencia: false]
-</CHARLA_MODELO>
-
-<HERRAMIENTAS>
-- consultar_calendar: para ver disponibilidad real antes de ofrecer horarios. Siempre usala primero.
-- iniciar_cobranzas: cuando el paciente acepta pagar, pasás los datos del turno
-- volver_secretaria_principal: si el tema se desvía del agendamiento
-- notificar_walter_urgente: emergencias o situaciones fuera de control
-</HERRAMIENTAS>"""
+Si detectás crisis o urgencia emocional:
+1. Cortá el flujo.
+2. "Entiendo que estás pasando por un momento muy difícil. Voy a conectarte con alguien ahora. Si es urgente, llamá al 135 o dirigite a la guardia más cercana."
+3. Llamá notificar_walter_urgente con es_emergencia: true.
+</EMERGENCIA>"""
 
 # ===================================================================
-# TOOLS DE LA AGENDADORA
+# TOOLS
 # ===================================================================
 TOOLS_AGENDADORA = [
     {
         "name": "consultar_calendar",
-        "description": "Consulta la disponibilidad de Walter en Google Calendar para los próximos días.",
+        "description": "Consulta la disponibilidad real en Google Calendar. Siempre usala antes de proponer horarios.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "fecha_desde": {"type": "string", "description": "Fecha desde (YYYY-MM-DD)"},
-                "texto_fecha": {"type": "string", "description": "Fecha en lenguaje natural, por ejemplo 'mañana a las 10'"},
-                "dias_a_consultar": {"type": "integer", "description": "Cantidad de días (default: 3)"}
-            }
+                "texto_fecha": {
+                    "type": "string",
+                    "description": "Fecha en lenguaje natural, por ejemplo 'mañana', 'el lunes', '16 de mayo', 'pasado mañana a las 10'."
+                },
+                "dias_a_consultar": {
+                    "type": "integer",
+                    "description": "Cuántos días consultar desde la fecha indicada (default: 1 si se da fecha concreta, 3 si es abierto)."
+                }
+            },
+            "required": ["texto_fecha"]
         }
     },
     {
         "name": "iniciar_cobranzas",
-        "description": "Deriva a cobranzas cuando el paciente acepta pagar el turno. Pasa los datos del turno elegido.",
+        "description": "Deriva a cobranzas cuando el paciente acepta pagar. Pasás los datos del turno elegido.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "dia": {"type": "string", "description": "Día del turno elegido (ej. miércoles 16)"},
-                "hora": {"type": "string", "description": "Hora del turno elegido (ej. 15hs)"},
+                "dia":         {"type": "string", "description": "Día del turno (ej. miércoles 16)"},
+                "hora":        {"type": "string", "description": "Hora del turno (ej. 15hs)"},
                 "profesional": {"type": "string", "description": "Profesional elegido"}
             },
             "required": ["dia", "hora", "profesional"]
@@ -121,15 +89,12 @@ TOOLS_AGENDADORA = [
     },
     {
         "name": "volver_secretaria_principal",
-        "description": "Devuelve al paciente a la secretaria principal Abby si se desvía del tema o hace otras consultas.",
-        "input_schema": {
-            "type": "object",
-            "properties": {}
-        }
+        "description": "Devuelve al paciente a la secretaria principal si el tema se desvía del agendamiento.",
+        "input_schema": {"type": "object", "properties": {}}
     },
     {
         "name": "notificar_walter_urgente",
-        "description": "Notifica a Walter sobre emergencias, o cuando el paciente se niega a pagar anticipadamente.",
+        "description": "Notifica a Walter ante emergencias o cuando el paciente se niega a pagar anticipadamente.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -140,449 +105,363 @@ TOOLS_AGENDADORA = [
     }
 ]
 
-
 # ===================================================================
-# GOOGLE CALENDAR / AUTH HELPERS
+# GOOGLE CALENDAR — Service Account (no necesita OAuth interactivo)
 # ===================================================================
-
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-SCOPES = ['https://www.googleapis.com/auth/calendar.events']
+SCOPES   = ['https://www.googleapis.com/auth/calendar.events',
+            'https://www.googleapis.com/auth/calendar.readonly']
 TIMEZONE = ZoneInfo('America/Argentina/Buenos_Aires')
 
 
-def _get_path(env_name: str, default_name: str) -> str:
-    return os.getenv(env_name, os.path.join(BASE_DIR, default_name))
-
-
-def _load_google_credentials() -> Credentials:
-    token_path = _get_path('GOOGLE_TOKEN_JSON', 'token.json')
-    creds_path = _get_path('GOOGLE_CREDENTIALS_JSON', 'credentials.json')
-    google_credentials_env = os.getenv('GOOGLE_CREDENTIALS')
-
-    creds = None
-    if os.path.exists(token_path):
-        try:
-            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-        except Exception as e:
-            print(f"[⚠️ ERROR CARGANDO TOKEN]: {e}. Intentando refrescar o reautorizar.")
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except Exception as e:
-                print(f"[⚠️ ERROR REFRESCANDO TOKEN]: {e}. Reautorizando.")
-                creds = None
-        if not creds:
-            client_config = None
-            if google_credentials_env:
-                try:
-                    config_data = json.loads(google_credentials_env)
-                    client_config = config_data
-                    print("[✅ GOOGLE_CREDENTIALS] Parseado correctamente desde entorno.")
-                except json.JSONDecodeError as e:
-                    print(f"[❌ ERROR PARSEANDO GOOGLE_CREDENTIALS]: {e}. Verificá que sea un JSON válido.")
-                    raise ValueError(f"GOOGLE_CREDENTIALS no es un JSON válido: {e}")
-
-            if client_config is not None:
-                flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-            else:
-                if not os.path.exists(creds_path):
-                    raise FileNotFoundError(f"No se encontró el archivo de credenciales: {creds_path}")
-                flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
-
-            auth_mode = os.getenv('GOOGLE_AUTH_MODE', 'local').lower()
-            if auth_mode == 'console':
-                creds = flow.run_console()
-            else:
-                port_env = os.getenv('GOOGLE_AUTH_PORT')
-                try:
-                    port = int(port_env) if port_env and port_env.isdigit() else 0
-                except ValueError:
-                    port = 0
-                try:
-                    creds = flow.run_local_server(port=port, open_browser=False)
-                except OSError as e:
-                    print(f"[⚠️ ERROR LOCAL SERVER]: {e}. Intentando console.")
-                    creds = flow.run_console()
-
-        with open(token_path, 'w', encoding='utf-8') as token_file:
-            token_file.write(creds.to_json())
-
-    return creds
-
-
 def _build_calendar_service():
-    try:
-        creds = _load_google_credentials()
-        return build('calendar', 'v3', credentials=creds, cache_discovery=False)
-    except Exception as e:
-        print(f"[❌ ERROR CONSTRUYENDO SERVICIO CALENDAR]: {e}")
-        raise
+    """
+    Autentica con Service Account.
+
+    En Railway, creá la variable de entorno GOOGLE_SERVICE_ACCOUNT con el
+    JSON completo de la service account (el archivo que descargás de
+    Google Cloud Console). Ejemplo:
+        GOOGLE_SERVICE_ACCOUNT = {"type":"service_account","project_id":...}
+
+    La service account tiene que tener acceso al calendario:
+      - Abrí Google Calendar → Configuración del calendario → Compartir
+      - Agregá el email de la service account (client_email del JSON)
+      - Dale permiso "Realizar cambios en eventos"
+    """
+    sa_json = os.getenv('GOOGLE_SERVICE_ACCOUNT')
+    if not sa_json:
+        raise EnvironmentError(
+            "Falta la variable de entorno GOOGLE_SERVICE_ACCOUNT. "
+            "Pegá el JSON completo de la service account en Railway."
+        )
+    info  = json.loads(sa_json)
+    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    return build('calendar', 'v3', credentials=creds, cache_discovery=False)
 
 
-def _parse_iso_datetime(value: str) -> datetime:
-    if value.endswith('Z'):
-        value = value[:-1] + '+00:00'
-    return datetime.fromisoformat(value)
-
-
-def _normalize_text(text: str) -> str:
+# ===================================================================
+# HELPERS DE FECHA / HORA
+# ===================================================================
+def _normalize(text: str) -> str:
     return re.sub(r'[^a-z0-9áéíóúüñ\s/\-:\.]', ' ', text.lower())
 
 
-def _parse_fecha_hora(texto: str, timezone: ZoneInfo = TIMEZONE) -> tuple[datetime, datetime] | tuple[None, None]:
+def _parse_fecha_hora(texto: str) -> tuple[datetime, datetime] | tuple[None, None]:
     if not texto:
         return None, None
 
-    texto = texto.lower()
-    texto = texto.replace('pasado manana', 'pasado mañana').replace('pasado mañana', 'pasado mañana')
-    texto = texto.replace('el próximo ', 'proximo ').replace('el próximo', 'proximo')
-    texto = texto.replace(' de la mañana', ' am').replace(' de la tarde', ' pm').replace(' de la noche', ' pm')
-    texto = texto.replace(' a las ', ' ').replace(' hs', ' ').replace(' horas', ' ')
-    texto = _normalize_text(texto)
+    t = texto.lower()
+    t = t.replace('pasado mañana', '__pasadomañana__')
+    t = t.replace(' de la mañana', ' am').replace(' de la tarde', ' pm').replace(' de la noche', ' pm')
+    t = t.replace(' a las ', ' ').replace('hs', '').replace('horas', '')
+    t = _normalize(t)
 
-    hoy = datetime.now(timezone).date()
+    hoy  = datetime.now(TIMEZONE).date()
     fecha = None
 
-    if 'pasado manana' in texto or 'pasado mañana' in texto:
+    if '__pasadomañana__' in t or 'pasado manana' in t:
         fecha = hoy + timedelta(days=2)
-    elif 'mañana' in texto:
+    elif 'mañana' in t:
         fecha = hoy + timedelta(days=1)
-    elif 'hoy' in texto:
+    elif 'hoy' in t:
         fecha = hoy
     else:
-        weekdays = {
-            'lunes': 0, 'martes': 1, 'miercoles': 2, 'jueves': 3,
-            'viernes': 4, 'sabado': 5, 'domingo': 6
-        }
-        for nombre, target in weekdays.items():
-            if nombre in texto:
-                hoy_weekday = hoy.weekday()
-                delta = (target - hoy_weekday) % 7
-                if delta == 0:
-                    delta = 7
+        dias_semana = {'lunes': 0, 'martes': 1, 'miercoles': 2, 'miércoles': 2,
+                       'jueves': 3, 'viernes': 4, 'sabado': 5, 'sábado': 5, 'domingo': 6}
+        for nombre, target in dias_semana.items():
+            if nombre in t:
+                delta = (target - hoy.weekday()) % 7 or 7
                 fecha = hoy + timedelta(days=delta)
                 break
 
     if fecha is None:
-        match = re.search(r'(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?', texto)
-        if match:
-            dia = int(match.group(1))
-            mes = int(match.group(2))
-            anio = int(match.group(3)) if match.group(3) else hoy.year
-            if anio < 100:
-                anio += 2000
-            try:
-                fecha = datetime(anio, mes, dia).date()
-            except ValueError:
-                fecha = None
+        m = re.search(r'(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?', t)
+        if m:
+            dia, mes = int(m.group(1)), int(m.group(2))
+            anio = int(m.group(3)) if m.group(3) else hoy.year
+            if anio < 100: anio += 2000
+            try: fecha = datetime(anio, mes, dia).date()
+            except ValueError: pass
 
     if fecha is None:
-        meses = {
-            'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4,
-            'mayo': 5, 'junio': 6, 'julio': 7, 'agosto': 8,
-            'septiembre': 9, 'octubre': 10, 'noviembre': 11, 'diciembre': 12
-        }
+        meses = {'enero':1,'febrero':2,'marzo':3,'abril':4,'mayo':5,'junio':6,
+                 'julio':7,'agosto':8,'septiembre':9,'octubre':10,'noviembre':11,'diciembre':12}
         for nombre, mes in meses.items():
-            if nombre in texto:
-                dia_match = re.search(r'(\d{1,2})', texto)
-                if dia_match:
-                    dia = int(dia_match.group(1))
+            if nombre in t:
+                dm = re.search(r'(\d{1,2})', t)
+                if dm:
                     try:
-                        fecha = datetime(hoy.year, mes, dia).date()
-                    except ValueError:
-                        fecha = None
-                        continue
-                    if fecha < hoy:
-                        fecha = datetime(hoy.year + 1, mes, dia).date()
+                        fecha = datetime(hoy.year, mes, int(dm.group(1))).date()
+                        if fecha < hoy: fecha = datetime(hoy.year + 1, mes, int(dm.group(1))).date()
+                    except ValueError: pass
                 break
 
     if fecha is None:
         return None, None
 
-    hora = 10
-    minuto = 0
-    hora_match = re.search(r'(\d{1,2})(?::(\d{2}))?', texto)
-    if hora_match:
-        hora = int(hora_match.group(1))
-        minuto = int(hora_match.group(2)) if hora_match.group(2) else 0
-        if hora < 7:
-            hora += 12
+    hora, minuto = 10, 0
+    hm = re.search(r'(\d{1,2})(?::(\d{2}))?', t)
+    if hm:
+        hora   = int(hm.group(1))
+        minuto = int(hm.group(2)) if hm.group(2) else 0
+        if hora < 7: hora += 12  # "3" → 15
 
-    start = datetime(fecha.year, fecha.month, fecha.day, hora, minuto, tzinfo=timezone)
-    end = start + timedelta(hours=1)
-    return start, end
+    start = datetime(fecha.year, fecha.month, fecha.day, hora, minuto, tzinfo=TIMEZONE)
+    return start, start + timedelta(hours=1)
 
 
-def _parse_fecha_desde(texto: str, timezone: ZoneInfo = TIMEZONE):
-    start, _ = _parse_fecha_hora(texto, timezone)
-    return start.date() if start else None
+def _consultar_calendar(texto_fecha: str, dias: int = 3) -> str:
+    """Devuelve texto con los horarios disponibles para mostrarle a Claude."""
+    try:
+        start, _ = _parse_fecha_hora(texto_fecha)
+        if start is None:
+            # Si no se pudo parsear, consultamos los próximos 3 días desde hoy
+            fecha_inicio = datetime.now(TIMEZONE).replace(hour=0, minute=0, second=0, microsecond=0)
+        else:
+            fecha_inicio = start.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        service  = _build_calendar_service()
+        time_min = fecha_inicio
+        time_max = fecha_inicio + timedelta(days=dias)
+
+        busy_raw = service.freebusy().query(body={
+            'timeMin':  time_min.isoformat(),
+            'timeMax':  time_max.isoformat(),
+            'timeZone': str(TIMEZONE),
+            'items':    [{'id': 'primary'}]
+        }).execute()['calendars']['primary']['busy']
+
+        busy_ranges = []
+        for item in busy_raw:
+            s = datetime.fromisoformat(item['start'].replace('Z', '+00:00')).astimezone(TIMEZONE)
+            e = datetime.fromisoformat(item['end'].replace('Z', '+00:00')).astimezone(TIMEZONE)
+            busy_ranges.append((s, e))
+
+        # Generar slots disponibles de 1 hora entre 9 y 18
+        slots = []
+        for day_offset in range(dias):
+            day = fecha_inicio + timedelta(days=day_offset)
+            cursor = day.replace(hour=9, minute=0)
+            end_of_day = day.replace(hour=18, minute=0)
+            while cursor + timedelta(hours=1) <= end_of_day and len(slots) < 6:
+                cend    = cursor + timedelta(hours=1)
+                overlap = any(not (cend <= bs or cursor >= be) for bs, be in busy_ranges)
+                if not overlap:
+                    slots.append(cursor)
+                cursor += timedelta(minutes=30)
+
+        if not slots:
+            return f"No hay turnos disponibles en los próximos {dias} días desde {texto_fecha}. ¿Querés que busque en otra fecha?"
+
+        lineas = [slot.strftime('%A %d/%m a las %H:%M').capitalize() for slot in slots[:4]]
+        return "Turnos disponibles:\n" + "\n".join(f"- {l}" for l in lineas)
+
+    except Exception as e:
+        print(f"[❌ CALENDAR ERROR]: {e}")
+        import traceback; traceback.print_exc()
+        return "Hubo un problema consultando la agenda. ¿Podés intentar con otra fecha?"
 
 
 def _is_busy(service, start: datetime, end: datetime) -> bool:
-    query = {
-        'timeMin': start.isoformat(),
-        'timeMax': end.isoformat(),
+    busy = service.freebusy().query(body={
+        'timeMin':  start.isoformat(),
+        'timeMax':  end.isoformat(),
         'timeZone': str(TIMEZONE),
-        'items': [{'id': 'primary'}]
-    }
-    busy = service.freebusy().query(body=query).execute()['calendars']['primary']['busy']
+        'items':    [{'id': 'primary'}]
+    }).execute()['calendars']['primary']['busy']
     return len(busy) > 0
 
 
-def _format_day(dt: datetime) -> str:
-    return dt.strftime('%A %d/%m').capitalize()
-
-
-def _format_slot(dt: datetime) -> str:
-    return dt.strftime('%A %d/%m a las %H:%M').capitalize()
-
-
-def _build_available_slots(busy_ranges: list[tuple[datetime, datetime]], start_date: datetime, days: int = 3) -> list[datetime]:
-    slots = []
-    for day_offset in range(days):
-        day = (start_date + timedelta(days=day_offset)).date()
-        cursor = datetime(day.year, day.month, day.day, 9, 0, tzinfo=TIMEZONE)
-        end_of_day = datetime(day.year, day.month, day.day, 18, 0, tzinfo=TIMEZONE)
-        while cursor + timedelta(hours=1) <= end_of_day and len(slots) < 6:
-            candidate_end = cursor + timedelta(hours=1)
-            overlap = any(not (candidate_end <= busy_start or cursor >= busy_end) for busy_start, busy_end in busy_ranges)
-            if not overlap:
-                slots.append(cursor)
-            cursor += timedelta(minutes=30)
-    return slots
-
-
-def _consultar_calendar(fecha_desde: str, dias: int = 3, texto_fecha: str = None) -> str:
-    print(f"[🔍 CALENDAR] Iniciando consulta: fecha_desde={fecha_desde}, dias={dias}, texto_fecha={texto_fecha}")
-    try:
-        if texto_fecha:
-            parsed = _parse_fecha_desde(texto_fecha)
-            if parsed:
-                fecha_inicio = parsed
-                print(f"[🔍 CALENDAR] Fecha parseada de texto: {fecha_inicio}")
-            else:
-                fecha_inicio = datetime.now(TIMEZONE).date()
-                print(f"[🔍 CALENDAR] No se pudo parsear texto, usando hoy: {fecha_inicio}")
-        else:
-            if not fecha_desde:
-                fecha_desde = datetime.now(TIMEZONE).strftime('%Y-%m-%d')
-            try:
-                fecha_inicio = datetime.fromisoformat(fecha_desde).date()
-                print(f"[🔍 CALENDAR] Fecha desde ISO: {fecha_inicio}")
-            except ValueError:
-                fecha_inicio = datetime.now(TIMEZONE).date()
-                print(f"[🔍 CALENDAR] Fecha desde inválida, usando hoy: {fecha_inicio}")
-
-        print(f"[🔍 CALENDAR] Construyendo servicio...")
-        service = _build_calendar_service()
-        print(f"[🔍 CALENDAR] Servicio construido OK")
-
-        time_min = datetime(fecha_inicio.year, fecha_inicio.month, fecha_inicio.day, 0, 0, tzinfo=TIMEZONE)
-        time_max = time_min + timedelta(days=dias)
-        query = {
-            'timeMin': time_min.isoformat(),
-            'timeMax': time_max.isoformat(),
-            'timeZone': str(TIMEZONE),
-            'items': [{'id': 'primary'}]
-        }
-        print(f"[🔍 CALENDAR] Query freebusy: {query}")
-        busy = service.freebusy().query(body=query).execute()['calendars']['primary']['busy']
-        print(f"[🔍 CALENDAR] Busy ranges encontrados: {len(busy)}")
-
-        busy_ranges = []
-        for item in busy:
-            start = _parse_iso_datetime(item['start']).astimezone(TIMEZONE)
-            end = _parse_iso_datetime(item['end']).astimezone(TIMEZONE)
-            busy_ranges.append((start, end))
-
-        print(f"[🔍 CALENDAR] Building available slots...")
-        available_slots = _build_available_slots(busy_ranges, time_min, dias)
-        print(f"[🔍 CALENDAR] Slots disponibles: {len(available_slots)}")
-
-        if not available_slots:
-            result = f"No hay turnos disponibles en Google Calendar desde {fecha_desde} por {dias} días."
-            print(f"[🔍 CALENDAR] Resultado: {result}")
-            return result
-
-        opciones = available_slots[:3]
-        lineas = [f"- {slot.strftime('%A %d/%m a las %H:%M')}" for slot in opciones]
-        result = "Disponibilidad real en Google Calendar:\n" + "\n".join(lineas)
-        print(f"[🔍 CALENDAR] Resultado exitoso: {result}")
-        return result
-    except Exception as e:
-        print(f"[❌ ERROR CONSULTANDO CALENDAR]: {e}")
-        import traceback
-        traceback.print_exc()
-        if "credentials" in str(e).lower() or "auth" in str(e).lower():
-            return "Problema con las credenciales de Google Calendar. Contactá al equipo técnico."
-        else:
-            return "Hubo un problema consultando Google Calendar. ¿Podés intentar con otra fecha o contactar al equipo?"
-
-
-def _crear_evento_calendar(titulo: str, start: datetime, end: datetime, descripcion: str = '') -> str:
-    service = _build_calendar_service()
-    event = {
-        'summary': titulo,
+def _crear_evento(service, titulo: str, start: datetime, end: datetime, descripcion: str = '') -> str:
+    event  = {
+        'summary':     titulo,
         'description': descripcion,
         'start': {'dateTime': start.isoformat(), 'timeZone': str(TIMEZONE)},
-        'end': {'dateTime': end.isoformat(), 'timeZone': str(TIMEZONE)}
+        'end':   {'dateTime': end.isoformat(),   'timeZone': str(TIMEZONE)}
     }
     creado = service.events().insert(calendarId='primary', body=event).execute()
     return creado.get('htmlLink', '')
 
 
-def _build_nome_from_cliente(cliente: Cliente) -> str:
-    return cliente.nombre_completo or cliente.telefono or 'Paciente'
-
-
 # ===================================================================
-# SECRETARIA AGENDADORA — Función principal
+# FUNCIÓN PRINCIPAL
 # ===================================================================
 async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = None):
-    """Contexto limpio: solo últimos 3 mensajes. Cuando termina, devuelve estado a principal."""
-    
+    """
+    Loop correcto: Claude llama tool → ejecutamos → devolvemos tool_result a Claude
+    → Claude formula la respuesta final para el usuario.
+    """
     await marcar_leido_wpp(msg_id)
-    
+
     db = SessionLocal()
     try:
         cliente = db.query(Cliente).filter(Cliente.telefono == to_number).first()
         if not cliente:
             print(f"[⚠️ AGENDADORA] Cliente {to_number} no encontrado.")
             return
-        
+
         cliente.mensajes_enviados += 1
         print(f"\n[AGENDADORA - {to_number}]: {user_text}")
-        
-        hace_6_horas = datetime.utcnow() - timedelta(hours=6)
-        mensajes_recientes = db.query(Mensaje).filter(
-            Mensaje.cliente_id == cliente.id,
-            Mensaje.fecha_creacion >= hace_6_horas
-        ).order_by(Mensaje.fecha_creacion.desc()).limit(20).all()
-        
-        historial_claude = []
+
+        # Historial reciente (últimas 6 horas, máx 20 mensajes)
+        hace_6h = datetime.utcnow() - timedelta(hours=6)
+        mensajes_recientes = (
+            db.query(Mensaje)
+            .filter(Mensaje.cliente_id == cliente.id, Mensaje.fecha_creacion >= hace_6h)
+            .order_by(Mensaje.fecha_creacion.desc())
+            .limit(20)
+            .all()
+        )
+
+        historial = []
         for m in reversed(mensajes_recientes):
-            historial_claude.append({
-                "role": "user" if m.rol == "usuario" else "assistant",
+            historial.append({
+                "role":    "user" if m.rol == "usuario" else "assistant",
                 "content": m.texto
             })
-        historial_claude.append({"role": "user", "content": user_text})
-        
-        nuevo_msg = Mensaje(cliente_id=cliente.id, rol="usuario", texto=user_text)
-        db.add(nuevo_msg)
-        
-        datos = cliente.datos_extraidos or {}
-        nombre = datos.get("nombre_contacto", "")
-        contexto_extra = f"\nEl cliente se llama {nombre}." if nombre else ""
-        system_final = SYSTEM_PROMPT_AGENDADORA + contexto_extra
-        
-        response = client_claude.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=300,
-            system=system_final,
-            tools=TOOLS_AGENDADORA,
-            messages=historial_claude
-        )
-        
-        texto_respuesta = ""
-        tools_a_ejecutar = []
-        for block in response.content:
-            if block.type == "text":
-                texto_respuesta += block.text.strip()
-            elif block.type == "tool_use":
-                tools_a_ejecutar.append({"name": block.name, "input": block.input})
-        
-        if texto_respuesta:
-            print(f"[AGENDADORA]: {texto_respuesta}\n")
-            await enviar_mensaje_wpp(to_number, texto_respuesta)
-            resp_msg = Mensaje(cliente_id=cliente.id, rol="asistente", texto=texto_respuesta)
-            db.add(resp_msg)
-        
-        if not texto_respuesta and not tools_a_ejecutar:
-            fallback_text = "Perdón, no entendí bien la fecha. ¿Podés decirme si querés hoy, mañana, pasado mañana o un día específico? Ejemplo: mañana a las 10 o martes 14/5 a las 16."
-            await enviar_mensaje_wpp(to_number, fallback_text)
-            resp_msg = Mensaje(cliente_id=cliente.id, rol="asistente", texto=fallback_text)
-            db.add(resp_msg)
+        historial.append({"role": "user", "content": user_text})
 
-        for tool in tools_a_ejecutar:
-            try:
-                if tool["name"] == "consultar_calendar":
-                    print(f"[🔍 AGENDADORA] Consultando calendar para {to_number}")
-                    await enviar_mensaje_wpp(to_number, "Reviso la agenda para esa fecha... Un momento.")
-                    fecha_desde = tool["input"].get("fecha_desde", datetime.utcnow().strftime("%Y-%m-%d"))
-                    dias = tool["input"].get("dias_a_consultar", 3)
-                    texto_fecha = tool["input"].get("texto_fecha")
-                    print(f"[🔍 AGENDADORA] Parámetros: fecha_desde={fecha_desde}, dias={dias}, texto_fecha={texto_fecha}")
-                    resultado = _consultar_calendar(fecha_desde, dias, texto_fecha)
-                    print(f"[🔍 AGENDADORA] Resultado calendar: {resultado[:100]}...")
-                    await enviar_mensaje_wpp(to_number, resultado)
-                    print(f"[✅ AGENDADORA] Mensaje enviado con resultado calendar")
-                elif tool["name"] == "iniciar_cobranzas":
-                    print(f"[💸 AGENDADORA] Iniciando cobranzas para {to_number}")
-                    dia = tool["input"].get("dia", "")
-                    hora = tool["input"].get("hora", "")
-                    profesional = tool["input"].get("profesional", "")
-                    turno_texto = f"{dia} {hora}".strip()
-                    start, end = _parse_fecha_hora(turno_texto)
-                    if not start or not end:
-                        await enviar_mensaje_wpp(to_number, f"No pude interpretar fecha y hora: '{turno_texto}'. ¿Podés escribir la fecha y hora exactas para confirmar el turno?")
-                        cliente.estado_agente = "agendadora"
-                        db.commit()
-                        continue
+        db.add(Mensaje(cliente_id=cliente.id, rol="usuario", texto=user_text))
 
-                    service = _build_calendar_service()
-                    if _is_busy(service, start, end):
-                        await enviar_mensaje_wpp(to_number, "Ese horario ya está ocupado en Google Calendar. Voy a buscar otra alternativa.")
-                        cliente.estado_agente = "agendadora"
-                        db.commit()
-                        continue
+        nombre       = (cliente.datos_extraidos or {}).get("nombre_contacto", "")
+        system_final = SYSTEM_PROMPT_AGENDADORA + (f"\nEl cliente se llama {nombre}." if nombre else "")
 
-                    descripcion = f"Turno Abriness con {profesional}. Paciente: {cliente.nombre_completo or to_number}."
-                    enlace = _crear_evento_calendar(
-                        f"Turno Abriness - {profesional}",
-                        start,
-                        end,
-                        descripcion
-                    )
-                    confirmacion = f"Perfecto, ya reservé tu turno para {start.strftime('%A %d/%m a las %H:%M')} con {profesional}."
-                    if enlace:
-                        confirmacion += f"\nLo registré en Google Calendar: {enlace}"
-                    await enviar_mensaje_wpp(to_number, confirmacion)
+        # ---------------------------------------------------------------
+        # Loop de herramientas: Claude puede llamar varias tools seguidas
+        # ---------------------------------------------------------------
+        MAX_ITERACIONES = 5  # evitar loops infinitos
+        for _ in range(MAX_ITERACIONES):
+            response = client_claude.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=400,
+                system=system_final,
+                tools=TOOLS_AGENDADORA,
+                messages=historial
+            )
 
-                    print(f"[💸 AGENDADORA] Turno reservado {start} - {end} con {profesional}. Derivando a cobranzas...")
+            # Separar bloques de texto y de tool_use
+            texto_bloques = [b for b in response.content if b.type == "text"]
+            tool_bloques  = [b for b in response.content if b.type == "tool_use"]
+
+            # Si Claude respondió con texto Y sin tools → respuesta final
+            if texto_bloques and not tool_bloques:
+                texto_respuesta = " ".join(b.text.strip() for b in texto_bloques)
+                print(f"[AGENDADORA]: {texto_respuesta}")
+                await enviar_mensaje_wpp(to_number, texto_respuesta)
+                db.add(Mensaje(cliente_id=cliente.id, rol="asistente", texto=texto_respuesta))
+                break
+
+            # Si hay texto junto con tools, enviarlo antes de procesar
+            if texto_bloques:
+                texto_previo = " ".join(b.text.strip() for b in texto_bloques)
+                await enviar_mensaje_wpp(to_number, texto_previo)
+                db.add(Mensaje(cliente_id=cliente.id, rol="asistente", texto=texto_previo))
+
+            if not tool_bloques:
+                # Claude paró sin texto ni tools (stop_reason != tool_use)
+                break
+
+            # Agregar la respuesta de Claude al historial (con los tool_use)
+            historial.append({"role": "assistant", "content": response.content})
+
+            # Ejecutar cada tool y construir los tool_result
+            tool_results = []
+            derivar      = None  # para manejar derivaciones después del loop
+
+            for tool in tool_bloques:
+                tool_name  = tool.name
+                tool_input = tool.input
+                print(f"[🔧 TOOL]: {tool_name} | input: {tool_input}")
+
+                try:
+                    if tool_name == "consultar_calendar":
+                        await enviar_mensaje_wpp(to_number, "Reviso la agenda... un momento.")
+                        resultado = _consultar_calendar(
+                            texto_fecha     = tool_input.get("texto_fecha", "hoy"),
+                            dias            = tool_input.get("dias_a_consultar", 3)
+                        )
+                        tool_results.append({
+                            "type":        "tool_result",
+                            "tool_use_id": tool.id,
+                            "content":     resultado
+                        })
+
+                    elif tool_name == "iniciar_cobranzas":
+                        dia         = tool_input.get("dia", "")
+                        hora        = tool_input.get("hora", "")
+                        profesional = tool_input.get("profesional", "")
+                        start, end  = _parse_fecha_hora(f"{dia} {hora}")
+
+                        if not start:
+                            resultado = f"No pude interpretar la fecha '{dia} {hora}'. ¿Podés confirmar día y hora exactos?"
+                        else:
+                            service = _build_calendar_service()
+                            if _is_busy(service, start, end):
+                                resultado = "Ese horario ya está ocupado. Voy a buscar otra alternativa."
+                            else:
+                                descripcion = f"Turno Abriness con {profesional}. Paciente: {cliente.nombre_completo or to_number}."
+                                enlace      = _crear_evento(service, f"Turno Abriness - {profesional}", start, end, descripcion)
+                                resultado   = f"Turno reservado el {start.strftime('%A %d/%m a las %H:%M')} con {profesional}."
+                                if enlace:
+                                    resultado += f" Link: {enlace}"
+                                derivar = "cobranzas"
+
+                        tool_results.append({
+                            "type":        "tool_result",
+                            "tool_use_id": tool.id,
+                            "content":     resultado
+                        })
+
+                    elif tool_name == "volver_secretaria_principal":
+                        tool_results.append({
+                            "type":        "tool_result",
+                            "tool_use_id": tool.id,
+                            "content":     "Derivando al paciente a la secretaria principal."
+                        })
+                        derivar = "principal"
+
+                    elif tool_name == "notificar_walter_urgente":
+                        es_emergencia = tool_input.get("es_emergencia", False)
+                        from services.secretaria_principal import enviar_notificacion_a_walter
+                        nombre_cliente = cliente.nombre_completo or nombre or to_number
+                        await enviar_notificacion_a_walter(to_number, nombre_cliente)
+                        tool_results.append({
+                            "type":        "tool_result",
+                            "tool_use_id": tool.id,
+                            "content":     f"Walter notificado. Emergencia: {es_emergencia}."
+                        })
+                        derivar = "manual"
+
+                except Exception as e:
+                    print(f"[❌ ERROR EN TOOL {tool_name}]: {e}")
+                    import traceback; traceback.print_exc()
+                    tool_results.append({
+                        "type":        "tool_result",
+                        "tool_use_id": tool.id,
+                        "content":     "Error al ejecutar la herramienta."
+                    })
+
+            # Agregar los resultados de las tools al historial para la próxima iteración
+            historial.append({"role": "user", "content": tool_results})
+
+            # Si hubo derivación, actualizar estado y salir del loop
+            if derivar:
+                if derivar == "cobranzas":
                     from services.cobranza import iniciar_cobranzas as iniciar_cobranzas_svc
                     await iniciar_cobranzas_svc(to_number)
                     cliente.estado_agente = "manual"
-                    db.commit()
-                elif tool["name"] == "volver_secretaria_principal":
-                    print(f"[🔄 SWITCH] Cliente {to_number} → 'principal'")
+                elif derivar == "principal":
                     cliente.estado_agente = "principal"
-                    db.commit()
-                elif tool["name"] == "notificar_walter_urgente":
-                    es_emergencia = tool["input"].get("es_emergencia", False)
-                    print(f"[🚨 URGENCIA AGENDADORA] Derivando a Walter. Emergencia: {es_emergencia}")
+                elif derivar == "manual":
                     cliente.estado_agente = "manual"
-                    
-                    from services.secretaria_principal import enviar_notificacion_a_walter
-                    nombre_cliente = cliente.nombre_completo or (cliente.datos_extraidos or {}).get("nombre_contacto", "un paciente")
-                    await enviar_notificacion_a_walter(to_number, nombre_cliente)
-                    db.commit()
-            except Exception as e:
-                print(f"[❌ ERROR EJECUTANDO TOOL {tool['name']}]: {e}")
-                import traceback
-                traceback.print_exc()
-                await enviar_mensaje_wpp(to_number, "Perdón, hubo un problema procesando tu solicitud. ¿Podés intentarlo de nuevo?")
-                cliente.estado_agente = "agendadora"
                 db.commit()
-        
+                break
+
         db.commit()
         print(f"[✅ AGENDADORA] Proceso completado para {to_number}")
-        
+
     except Exception as e:
         print(f"\n[❌ ERROR AGENDADORA]: {e}")
-        import traceback
-        traceback.print_exc()
+        import traceback; traceback.print_exc()
         try:
             await enviar_mensaje_wpp(to_number, "Perdón, hubo un problema revisando la agenda. ¿Podés decirme otra fecha o horario?")
         except Exception:
