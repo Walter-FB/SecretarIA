@@ -161,19 +161,28 @@ def _load_google_credentials() -> Credentials:
 
     creds = None
     if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+        try:
+            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+        except Exception as e:
+            print(f"[⚠️ ERROR CARGANDO TOKEN]: {e}. Intentando refrescar o reautorizar.")
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                print(f"[⚠️ ERROR REFRESCANDO TOKEN]: {e}. Reautorizando.")
+                creds = None
+        if not creds:
             client_config = None
             if google_credentials_env:
                 try:
                     config_data = json.loads(google_credentials_env)
                     client_config = config_data
+                    print("[✅ GOOGLE_CREDENTIALS] Parseado correctamente desde entorno.")
                 except json.JSONDecodeError as e:
-                    raise ValueError(f"No se pudo parsear GOOGLE_CREDENTIALS: {e}")
+                    print(f"[❌ ERROR PARSEANDO GOOGLE_CREDENTIALS]: {e}. Verificá que sea un JSON válido.")
+                    raise ValueError(f"GOOGLE_CREDENTIALS no es un JSON válido: {e}")
 
             if client_config is not None:
                 flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
@@ -193,7 +202,8 @@ def _load_google_credentials() -> Credentials:
                     port = 0
                 try:
                     creds = flow.run_local_server(port=port, open_browser=False)
-                except OSError:
+                except OSError as e:
+                    print(f"[⚠️ ERROR LOCAL SERVER]: {e}. Intentando console.")
                     creds = flow.run_console()
 
         with open(token_path, 'w', encoding='utf-8') as token_file:
@@ -203,8 +213,12 @@ def _load_google_credentials() -> Credentials:
 
 
 def _build_calendar_service():
-    creds = _load_google_credentials()
-    return build('calendar', 'v3', credentials=creds, cache_discovery=False)
+    try:
+        creds = _load_google_credentials()
+        return build('calendar', 'v3', credentials=creds, cache_discovery=False)
+    except Exception as e:
+        print(f"[❌ ERROR CONSTRUYENDO SERVICIO CALENDAR]: {e}")
+        raise
 
 
 def _parse_iso_datetime(value: str) -> datetime:
@@ -341,43 +355,52 @@ def _build_available_slots(busy_ranges: list[tuple[datetime, datetime]], start_d
 
 
 def _consultar_calendar(fecha_desde: str, dias: int = 3, texto_fecha: str = None) -> str:
-    if texto_fecha:
-        parsed = _parse_fecha_desde(texto_fecha)
-        if parsed:
-            fecha_inicio = parsed
+    try:
+        if texto_fecha:
+            parsed = _parse_fecha_desde(texto_fecha)
+            if parsed:
+                fecha_inicio = parsed
+            else:
+                fecha_inicio = datetime.now(TIMEZONE).date()
         else:
-            fecha_inicio = datetime.now(TIMEZONE).date()
-    else:
-        if not fecha_desde:
-            fecha_desde = datetime.now(TIMEZONE).strftime('%Y-%m-%d')
-        try:
-            fecha_inicio = datetime.fromisoformat(fecha_desde).date()
-        except ValueError:
-            fecha_inicio = datetime.now(TIMEZONE).date()
+            if not fecha_desde:
+                fecha_desde = datetime.now(TIMEZONE).strftime('%Y-%m-%d')
+            try:
+                fecha_inicio = datetime.fromisoformat(fecha_desde).date()
+            except ValueError:
+                fecha_inicio = datetime.now(TIMEZONE).date()
 
-    service = _build_calendar_service()
-    time_min = datetime(fecha_inicio.year, fecha_inicio.month, fecha_inicio.day, 0, 0, tzinfo=TIMEZONE)
-    time_max = time_min + timedelta(days=dias)
-    query = {
-        'timeMin': time_min.isoformat(),
-        'timeMax': time_max.isoformat(),
-        'timeZone': str(TIMEZONE),
-        'items': [{'id': 'primary'}]
-    }
-    busy = service.freebusy().query(body=query).execute()['calendars']['primary']['busy']
-    busy_ranges = []
-    for item in busy:
-        start = _parse_iso_datetime(item['start']).astimezone(TIMEZONE)
-        end = _parse_iso_datetime(item['end']).astimezone(TIMEZONE)
-        busy_ranges.append((start, end))
+        service = _build_calendar_service()
+        time_min = datetime(fecha_inicio.year, fecha_inicio.month, fecha_inicio.day, 0, 0, tzinfo=TIMEZONE)
+        time_max = time_min + timedelta(days=dias)
+        query = {
+            'timeMin': time_min.isoformat(),
+            'timeMax': time_max.isoformat(),
+            'timeZone': str(TIMEZONE),
+            'items': [{'id': 'primary'}]
+        }
+        busy = service.freebusy().query(body=query).execute()['calendars']['primary']['busy']
+        busy_ranges = []
+        for item in busy:
+            start = _parse_iso_datetime(item['start']).astimezone(TIMEZONE)
+            end = _parse_iso_datetime(item['end']).astimezone(TIMEZONE)
+            busy_ranges.append((start, end))
 
-    available_slots = _build_available_slots(busy_ranges, time_min, dias)
-    if not available_slots:
-        return f"No hay turnos disponibles en Google Calendar desde {fecha_desde} por {dias} días."
+        available_slots = _build_available_slots(busy_ranges, time_min, dias)
+        if not available_slots:
+            return f"No hay turnos disponibles en Google Calendar desde {fecha_desde} por {dias} días."
 
-    opciones = available_slots[:3]
-    lineas = [f"- {slot.strftime('%A %d/%m a las %H:%M')}" for slot in opciones]
-    return "Disponibilidad real en Google Calendar:\n" + "\n".join(lineas)
+        opciones = available_slots[:3]
+        lineas = [f"- {slot.strftime('%A %d/%m a las %H:%M')}" for slot in opciones]
+        return "Disponibilidad real en Google Calendar:\n" + "\n".join(lineas)
+    except Exception as e:
+        print(f"[❌ ERROR CONSULTANDO CALENDAR]: {e}")
+        import traceback
+        traceback.print_exc()
+        if "credentials" in str(e).lower() or "auth" in str(e).lower():
+            return "Problema con las credenciales de Google Calendar. Contactá al equipo técnico."
+        else:
+            return "Hubo un problema consultando Google Calendar. ¿Podés intentar con otra fecha o contactar al equipo?"
 
 
 def _crear_evento_calendar(titulo: str, start: datetime, end: datetime, descripcion: str = '') -> str:
