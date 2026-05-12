@@ -34,10 +34,11 @@ Cálido, eficiente, al grano. Usás "vos". Una pregunta por mensaje. Sin emojis 
 <TU_TRABAJO>
 1. Siempre consultá disponibilidad real con consultar_calendar antes de proponer horarios.
 2. Si el paciente menciona una fecha o un concepto de tiempo, usá eso para consultar el calendario: hoy, mañana, pasado mañana, este lunes, el próximo martes, 16 de mayo, 14/05, etc.
-3. Si no tiene fecha clara, preguntá: "¿Te queda mejor hoy, mañana, pasado mañana o otro día específico?"
-4. Ofrecé hasta 3 opciones concretas con día, hora y profesional.
+3. Si el paciente dice "mañana" o "pasado mañana", interpretalo como una fecha concreta y llamá a consultar_calendar con texto_fecha.
+4. Si no tiene fecha clara, preguntá: "¿Te queda mejor hoy, mañana, pasado mañana o otro día específico?"
 5. Si el paciente responde solo con una fecha parcial, pedí la hora exacta de forma breve.
-6. Cuando el paciente elija, confirmá el resumen del turno y derivá a cobranzas.
+6. Respondé siempre con texto visible, aunque uses herramientas. No te quedes en silencio.
+7. Cuando el paciente elija, confirmá el resumen del turno y derivá a cobranzas.
 
 Tu trabajo termina cuando el paciente acepta pagar. De ahí en adelante es cobranzas.
 </TU_TRABAJO>
@@ -465,6 +466,7 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
 
         for tool in tools_a_ejecutar:
             if tool["name"] == "consultar_calendar":
+                await enviar_mensaje_wpp(to_number, "Reviso la agenda para esa fecha... Un momento.")
                 fecha_desde = tool["input"].get("fecha_desde", datetime.utcnow().strftime("%Y-%m-%d"))
                 dias = tool["input"].get("dias_a_consultar", 3)
                 texto_fecha = tool["input"].get("texto_fecha")
