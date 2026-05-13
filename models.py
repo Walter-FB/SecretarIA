@@ -33,7 +33,7 @@ class Cliente(Base):
     mensajes_enviados = Column(Integer, default=0)
     
     # EL ENRUTADOR: 'principal', 'agendadora', 'agendar_y_pagar', 'esperando_pago', o 'manual'
-    estado_agente = Column(String, default="agendadora", nullable=False)
+    estado_agente = Column(String, default="principal", nullable=False)
     
     # La memoria consolidada por el Analista Background
     datos_extraidos = Column(JSON, default={}) 
