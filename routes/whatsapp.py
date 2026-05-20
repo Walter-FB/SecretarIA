@@ -97,14 +97,11 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             from services.agendadora import secretaria_agendadora
             background_tasks.add_task(secretaria_agendadora, text, phone_number, msg_id)
 
-<<<<<<< HEAD
         elif estado_agente == "esperando_mail":
             print(f"➡️ [ROUTER] Capturando email de {phone_number}")
             from services.cobranza import handler_esperando_mail
             background_tasks.add_task(handler_esperando_mail, text, phone_number, msg_id)
 
-=======
->>>>>>> 9c37aa49dbc43a033a959b2656006c45bced58d8
         elif estado_agente == "manual":
             print(f"[🖐️ MANUAL] Cliente {phone_number} en modo manual. Ignorando mensaje.")
 
