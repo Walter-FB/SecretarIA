@@ -143,13 +143,21 @@ def _enviar_smtp(to: str, html: str) -> None:
     msg.attach(MIMEText(html, "html", "utf-8"))
 
     logging.warning(f"[📧 SMTP] Conectando a {host}:{port}...")
-    with smtplib.SMTP(host, port) as server:
-        server.ehlo()
-        server.starttls()
-        logging.warning(f"[📧 SMTP] TLS OK. Haciendo login con {user}...")
-        server.login(user, password)
-        server.sendmail(from_addr, to, msg.as_string())
-        logging.warning(f"[📧 SMTP] ✅ Mail enviado exitosamente a {to}")
+    if port == 465:
+        with smtplib.SMTP_SSL(host, port) as server:
+            server.ehlo()
+            logging.warning(f"[📧 SMTP] SSL OK. Haciendo login con {user}...")
+            server.login(user, password)
+            server.sendmail(from_addr, to, msg.as_string())
+            logging.warning(f"[📧 SMTP] ✅ Mail enviado exitosamente a {to}")
+    else:
+        with smtplib.SMTP(host, port) as server:
+            server.ehlo()
+            server.starttls()
+            logging.warning(f"[📧 SMTP] STARTTLS OK. Haciendo login con {user}...")
+            server.login(user, password)
+            server.sendmail(from_addr, to, msg.as_string())
+            logging.warning(f"[📧 SMTP] ✅ Mail enviado exitosamente a {to}")
 
 
 async def enviar_mail_confirmacion(
