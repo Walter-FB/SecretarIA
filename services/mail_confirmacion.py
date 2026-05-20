@@ -123,13 +123,17 @@ def _build_html(
 
 
 def _enviar_smtp(to: str, html: str) -> None:
+    import logging
     host     = os.getenv("SMTP_HOST", "smtp.gmail.com")
     port     = int(os.getenv("SMTP_PORT", "587"))
     user     = os.getenv("SMTP_USER")
     password = os.getenv("SMTP_PASS")
     from_addr = os.getenv("SMTP_FROM", user)
 
+    logging.warning(f"[📧 SMTP] Intentando envío a {to} | host={host}:{port} | user={user}")
+
     if not user or not password:
+        logging.warning("[📧 SMTP] ❌ Faltan SMTP_USER o SMTP_PASS en las variables de entorno.")
         raise ValueError("Faltan SMTP_USER o SMTP_PASS en las variables de entorno.")
 
     msg = MIMEMultipart("alternative")
@@ -138,11 +142,14 @@ def _enviar_smtp(to: str, html: str) -> None:
     msg["To"]      = to
     msg.attach(MIMEText(html, "html", "utf-8"))
 
+    logging.warning(f"[📧 SMTP] Conectando a {host}:{port}...")
     with smtplib.SMTP(host, port) as server:
         server.ehlo()
         server.starttls()
+        logging.warning(f"[📧 SMTP] TLS OK. Haciendo login con {user}...")
         server.login(user, password)
         server.sendmail(from_addr, to, msg.as_string())
+        logging.warning(f"[📧 SMTP] ✅ Mail enviado exitosamente a {to}")
 
 
 async def enviar_mail_confirmacion(

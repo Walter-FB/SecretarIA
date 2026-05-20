@@ -1,5 +1,6 @@
 import unicodedata
 import re
+import logging
 
 from services.secretaria_principal import enviar_mensaje_wpp, enviar_notificacion_a_walter, marcar_leido_wpp
 from database import SessionLocal
@@ -102,11 +103,13 @@ async def iniciar_cobranzas(
     either sends the confirmation email immediately or asks the client for their email first.
     Returns the next estado_agente: 'manual' or 'esperando_mail'.
     """
+    logging.warning(f"[💸 COBRANZAS] Iniciando para {to_number} | especialidad={especialidad} | cobertura={cobertura} | detalle_turno={detalle_turno}")
     db = SessionLocal()
     try:
         cliente = db.query(Cliente).filter(Cliente.telefono == to_number).first()
         if cliente and not cobertura:
             cobertura = cliente.obra_social
+            logging.warning(f"[💸 COBRANZAS] Cobertura tomada de DB: {cobertura}")
 
         # Persist turno details for the confirmation email
         if cliente and detalle_turno:
@@ -115,10 +118,11 @@ async def iniciar_cobranzas(
             datos["especialidad_turno"] = _normalizar_especialidad(especialidad)
             cliente.datos_extraidos   = datos
             db.commit()
+            logging.warning(f"[💸 COBRANZAS] Turno guardado en datos_extraidos: {detalle_turno}")
 
         mensaje = generar_mensaje_cobro(especialidad, cobertura, obra_social)
         await enviar_mensaje_wpp(to_number, mensaje)
-        print(f"[COBRANZAS] Mensaje de cobro enviado a {to_number}")
+        logging.warning(f"[💸 COBRANZAS] Mensaje de cobro enviado a {to_number}")
 
         nombre = "un paciente"
         if cliente:
@@ -128,20 +132,25 @@ async def iniciar_cobranzas(
                 nombre = cliente.datos_extraidos["nombre_contacto"]
 
         await enviar_notificacion_a_walter(to_number, nombre)
-        print(f"[COBRANZAS] Notificación enviada a Walter sobre {to_number}")
+        logging.warning(f"[💸 COBRANZAS] Notificación enviada a Walter sobre {to_number}")
 
         # Email logic — only when an appointment was actually confirmed
         if detalle_turno:
+            logging.warning(f"[📧 COBRANZAS] Turno confirmado, evaluando email para {to_number} | mail_guardado={cliente.mail if cliente else 'sin cliente'}")
             if cliente and cliente.mail:
+                logging.warning(f"[📧 COBRANZAS] Mail ya registrado ({cliente.mail}), enviando confirmación directo.")
                 await _enviar_email_confirmacion(cliente, detalle_turno, especialidad)
                 return "manual"
             else:
+                logging.warning(f"[📧 COBRANZAS] Sin mail registrado, pidiendo al cliente.")
                 await enviar_mensaje_wpp(
                     to_number,
                     "Por último, para enviarte la confirmación del turno por mail, "
                     "¿me podés pasar tu dirección de correo electrónico?"
                 )
                 return "esperando_mail"
+        else:
+            logging.warning(f"[💸 COBRANZAS] Sin detalle_turno — solo consulta de precio, no se manda mail.")
 
         return "manual"
     finally:
@@ -151,20 +160,27 @@ async def iniciar_cobranzas(
 async def _enviar_email_confirmacion(cliente: Cliente, detalle_turno: str, especialidad: str = None) -> None:
     from services.mail_confirmacion import enviar_mail_confirmacion
     datos = cliente.datos_extraidos or {}
-    await enviar_mail_confirmacion(
+    esp   = datos.get("especialidad_turno") or _normalizar_especialidad(especialidad)
+    logging.warning(f"[📧 MAIL] Preparando envío a {cliente.mail} | nombre={cliente.nombre_completo} | especialidad={esp} | turno={detalle_turno}")
+    ok = await enviar_mail_confirmacion(
         mail_destino    = cliente.mail,
         nombre          = cliente.nombre_completo or datos.get("nombre_contacto", "Paciente"),
-        especialidad    = datos.get("especialidad_turno") or _normalizar_especialidad(especialidad),
+        especialidad    = esp,
         detalle_turno   = detalle_turno,
         obra_social     = cliente.obra_social,
         dni             = cliente.dni,
         numero_afiliado = cliente.numero_afiliado,
         fecha_nacimiento = cliente.fecha_nacimiento,
     )
+    if ok:
+        logging.warning(f"[📧 MAIL] ✅ Confirmación enviada exitosamente a {cliente.mail}")
+    else:
+        logging.warning(f"[📧 MAIL] ❌ Falló el envío a {cliente.mail}")
 
 
 async def handler_esperando_mail(user_text: str, to_number: str, msg_id: str = None) -> None:
     """Handles the 'esperando_mail' state: validates the email, saves it, sends confirmation."""
+    logging.warning(f"[📧 ESPERANDO_MAIL] Recibido de {to_number}: '{user_text}'")
     await marcar_leido_wpp(msg_id)
 
     texto = user_text.strip()
@@ -173,9 +189,11 @@ async def handler_esperando_mail(user_text: str, to_number: str, msg_id: str = N
     try:
         cliente = db.query(Cliente).filter(Cliente.telefono == to_number).first()
         if not cliente:
+            logging.warning(f"[📧 ESPERANDO_MAIL] ⚠️ Cliente {to_number} no encontrado en DB.")
             return
 
         if _EMAIL_RE.match(texto):
+            logging.warning(f"[📧 ESPERANDO_MAIL] Email válido recibido: {texto}. Guardando y enviando confirmación.")
             cliente.mail         = texto
             cliente.estado_agente = "manual"
             db.commit()
@@ -188,9 +206,11 @@ async def handler_esperando_mail(user_text: str, to_number: str, msg_id: str = N
             datos        = cliente.datos_extraidos or {}
             detalle      = datos.get("ultimo_turno", "Tu próximo turno en Clínica Abriness")
             especialidad = datos.get("especialidad_turno")
+            logging.warning(f"[📧 ESPERANDO_MAIL] Disparando email | detalle={detalle} | especialidad={especialidad}")
             await _enviar_email_confirmacion(cliente, detalle, especialidad)
 
         else:
+            logging.warning(f"[📧 ESPERANDO_MAIL] Email inválido recibido: '{texto}'")
             await enviar_mensaje_wpp(
                 to_number,
                 "Hmm, eso no parece un email válido 🤔\n"
