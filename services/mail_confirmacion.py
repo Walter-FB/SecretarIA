@@ -1,9 +1,6 @@
-import smtplib
 import os
-import asyncio
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.utils import formataddr
+import logging
+import resend
 
 ESPECIALIDAD_DISPLAY = {
     "psiquiatra": "Psiquiatría — Dr. Barros",
@@ -122,46 +119,6 @@ def _build_html(
 </html>"""
 
 
-def _enviar_smtp(to: str, html: str) -> None:
-    import logging
-    host     = os.getenv("SMTP_HOST", "smtp.gmail.com")
-    port     = int(os.getenv("SMTP_PORT", "587"))
-    user     = os.getenv("SMTP_USER")
-    password = os.getenv("SMTP_PASS")
-    from_addr = os.getenv("SMTP_FROM", user)
-
-    logging.warning(f"[📧 SMTP] Intentando envío a {to} | host={host}:{port} | user={user}")
-
-    if not user or not password:
-        logging.warning("[📧 SMTP] ❌ Faltan SMTP_USER o SMTP_PASS en las variables de entorno.")
-        raise ValueError("Faltan SMTP_USER o SMTP_PASS en las variables de entorno.")
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = "✅ Turno confirmado — Clínica Abriness"
-    msg["From"]    = formataddr(("Clínica Abriness", from_addr))
-    msg["To"]      = to
-    msg.attach(MIMEText(html, "html", "utf-8"))
-
-    logging.warning(f"[📧 SMTP] Conectando a {host}:{port}...")
-    if port == 465:
-        with smtplib.SMTP_SSL(host, port, timeout=15) as server:
-            server.ehlo()
-            logging.warning(f"[📧 SMTP] SSL OK. Haciendo login con {user}...")
-            server.login(user, password)
-            logging.warning(f"[📧 SMTP] Login OK. Enviando...")
-            server.sendmail(from_addr, to, msg.as_string())
-            logging.warning(f"[📧 SMTP] ✅ Mail enviado exitosamente a {to}")
-    else:
-        with smtplib.SMTP(host, port, timeout=15) as server:
-            server.ehlo()
-            server.starttls()
-            logging.warning(f"[📧 SMTP] STARTTLS OK. Haciendo login con {user}...")
-            server.login(user, password)
-            logging.warning(f"[📧 SMTP] Login OK. Enviando...")
-            server.sendmail(from_addr, to, msg.as_string())
-            logging.warning(f"[📧 SMTP] ✅ Mail enviado exitosamente a {to}")
-
-
 async def enviar_mail_confirmacion(
     mail_destino: str,
     nombre: str,
@@ -172,21 +129,34 @@ async def enviar_mail_confirmacion(
     numero_afiliado: str = None,
     fecha_nacimiento: str = None,
 ) -> bool:
-    """Sends the HTML confirmation email. Returns True on success."""
+    """Sends the HTML confirmation email via Resend. Returns True on success."""
     if not mail_destino:
-        print("[📧 MAIL] Sin dirección de email, no se envía.")
+        logging.warning("[📧 MAIL] Sin dirección de email, no se envía.")
         return False
 
-    nombre         = nombre or "Paciente"
-    detalle_turno  = detalle_turno or "Tu próximo turno en Clínica Abriness"
+    api_key = os.getenv("RESEND_API_KEY")
+    if not api_key:
+        logging.warning("[📧 MAIL] ❌ Falta RESEND_API_KEY en las variables de entorno.")
+        return False
+
+    resend.api_key = api_key
+    nombre        = nombre or "Paciente"
+    detalle_turno = detalle_turno or "Tu próximo turno en Clínica Abriness"
 
     html = _build_html(nombre, especialidad, detalle_turno, obra_social, dni, numero_afiliado, fecha_nacimiento)
 
+    logging.warning(f"[📧 RESEND] Enviando a {mail_destino} | nombre={nombre} | especialidad={especialidad}")
     try:
-        await asyncio.to_thread(_enviar_smtp, mail_destino, html)
-        logging.warning(f"[📧 MAIL] ✅ Confirmación enviada a {mail_destino}")
+        params = resend.Emails.SendParams(
+            from_="Clínica Abriness <onboarding@resend.dev>",
+            to=[mail_destino],
+            subject="✅ Turno confirmado — Clínica Abriness",
+            html=html,
+        )
+        r = resend.Emails.send(params)
+        logging.warning(f"[📧 RESEND] ✅ Mail enviado. ID: {r.get('id')}")
         return True
     except Exception as e:
-        logging.warning(f"[📧 MAIL] ❌ No se pudo enviar a {mail_destino}: {e}")
+        logging.warning(f"[📧 RESEND] ❌ Error al enviar a {mail_destino}: {e}")
         import traceback; logging.warning(traceback.format_exc())
         return False
