@@ -503,17 +503,12 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
             if derivar:
                 if derivar == "cobranzas":
                     from services.cobranza import iniciar_cobranzas as iniciar_cobranzas_svc
-<<<<<<< HEAD
                     next_state = await iniciar_cobranzas_svc(
                         to_number,
                         especialidad=profesional,
                         detalle_turno=resultado,
                     )
                     cliente.estado_agente = next_state
-=======
-                    await iniciar_cobranzas_svc(to_number)
-                    cliente.estado_agente = "manual"
->>>>>>> 9c37aa49dbc43a033a959b2656006c45bced58d8
                 elif derivar == "principal":
                     cliente.estado_agente = "principal"
                 elif derivar == "manual":

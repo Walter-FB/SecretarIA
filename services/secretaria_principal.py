@@ -149,14 +149,10 @@ TOOLS_PRINCIPAL = [
         "description": "Deriva a cobranzas para consultas de precios/pagos, si el paciente aceptó ser derivado.",
         "input_schema": {
             "type": "object",
-<<<<<<< HEAD
             "properties": {
                 "especialidad": {"type": "string", "enum": ["psicología", "psiquiatría"], "description": "Especialidad consultada"},
                 "cobertura":    {"type": "string", "description": "Cobertura del paciente (particular u obra social con nombre)"}
             }
-=======
-            "properties": {}
->>>>>>> 9c37aa49dbc43a033a959b2656006c45bced58d8
         }
     },
     {
@@ -406,7 +402,6 @@ async def _ejecutar_tool_principal(db, cliente, to_number: str, tool: dict):
     elif tool["name"] == "iniciar_cobranzas":
         print(f"[💸 COBRANZAS] Derivando a cobranzas: {to_number}")
         from services.cobranza import iniciar_cobranzas as iniciar_cobranzas_svc
-<<<<<<< HEAD
         especialidad_cobro = tool["input"].get("especialidad")
         cobertura_cobro    = tool["input"].get("cobertura")
         next_state = await iniciar_cobranzas_svc(
@@ -415,12 +410,6 @@ async def _ejecutar_tool_principal(db, cliente, to_number: str, tool: dict):
             cobertura=cobertura_cobro,
         )
         cliente.estado_agente = next_state
-=======
-        await iniciar_cobranzas_svc(to_number)
-        
-        # Lo pasamos a manual para que corte el flujo (ya que es el final del MVP)
-        cliente.estado_agente = "manual"
->>>>>>> 9c37aa49dbc43a033a959b2656006c45bced58d8
         db.commit()
 
     elif tool["name"] == "notificar_walter_urgente":

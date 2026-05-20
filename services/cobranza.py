@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import unicodedata
 import re
 
@@ -121,29 +120,12 @@ async def iniciar_cobranzas(
         await enviar_mensaje_wpp(to_number, mensaje)
         print(f"[COBRANZAS] Mensaje de cobro enviado a {to_number}")
 
-=======
-from services.secretaria_principal import enviar_mensaje_wpp, enviar_notificacion_a_walter
-from database import SessionLocal
-from models import Cliente
-
-async def iniciar_cobranzas(to_number: str):
-    # 1. Enviar mensaje de MVP al paciente
-    mensaje = "Gracias por probar SecretarIA, hasta aca llega el 1er mvp."
-    await enviar_mensaje_wpp(to_number, mensaje)
-    print(f"[COBRANZAS] Mensaje de MVP enviado a {to_number}")
-    
-    # 2. Buscar al paciente en la DB para sacar el nombre
-    db = SessionLocal()
-    try:
-        cliente = db.query(Cliente).filter(Cliente.telefono == to_number).first()
->>>>>>> 9c37aa49dbc43a033a959b2656006c45bced58d8
         nombre = "un paciente"
         if cliente:
             if cliente.nombre_completo:
                 nombre = cliente.nombre_completo
             elif cliente.datos_extraidos and "nombre_contacto" in cliente.datos_extraidos:
                 nombre = cliente.datos_extraidos["nombre_contacto"]
-<<<<<<< HEAD
 
         await enviar_notificacion_a_walter(to_number, nombre)
         print(f"[COBRANZAS] Notificación enviada a Walter sobre {to_number}")
@@ -214,11 +196,5 @@ async def handler_esperando_mail(user_text: str, to_number: str, msg_id: str = N
                 "Hmm, eso no parece un email válido 🤔\n"
                 "Por favor enviame tu correo electrónico (ej: nombre@gmail.com)."
             )
-=======
-                
-        # 3. Avisarle a Walter
-        await enviar_notificacion_a_walter(to_number, nombre)
-        print(f"[COBRANZAS] Notificación enviada a Walter sobre {to_number}")
->>>>>>> 9c37aa49dbc43a033a959b2656006c45bced58d8
     finally:
         db.close()
