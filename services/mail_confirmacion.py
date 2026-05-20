@@ -144,18 +144,20 @@ def _enviar_smtp(to: str, html: str) -> None:
 
     logging.warning(f"[📧 SMTP] Conectando a {host}:{port}...")
     if port == 465:
-        with smtplib.SMTP_SSL(host, port) as server:
+        with smtplib.SMTP_SSL(host, port, timeout=15) as server:
             server.ehlo()
             logging.warning(f"[📧 SMTP] SSL OK. Haciendo login con {user}...")
             server.login(user, password)
+            logging.warning(f"[📧 SMTP] Login OK. Enviando...")
             server.sendmail(from_addr, to, msg.as_string())
             logging.warning(f"[📧 SMTP] ✅ Mail enviado exitosamente a {to}")
     else:
-        with smtplib.SMTP(host, port) as server:
+        with smtplib.SMTP(host, port, timeout=15) as server:
             server.ehlo()
             server.starttls()
             logging.warning(f"[📧 SMTP] STARTTLS OK. Haciendo login con {user}...")
             server.login(user, password)
+            logging.warning(f"[📧 SMTP] Login OK. Enviando...")
             server.sendmail(from_addr, to, msg.as_string())
             logging.warning(f"[📧 SMTP] ✅ Mail enviado exitosamente a {to}")
 
@@ -182,8 +184,9 @@ async def enviar_mail_confirmacion(
 
     try:
         await asyncio.to_thread(_enviar_smtp, mail_destino, html)
-        print(f"[📧 MAIL] Confirmación enviada a {mail_destino}")
+        logging.warning(f"[📧 MAIL] ✅ Confirmación enviada a {mail_destino}")
         return True
     except Exception as e:
-        print(f"[❌ MAIL ERROR] No se pudo enviar a {mail_destino}: {e}")
+        logging.warning(f"[📧 MAIL] ❌ No se pudo enviar a {mail_destino}: {e}")
+        import traceback; logging.warning(traceback.format_exc())
         return False
