@@ -182,12 +182,12 @@ async def enviar_mail_confirmacion(
 
     logging.warning(f"[📧 RESEND] Enviando a {mail_destino} | nombre={nombre} | especialidad={especialidad}")
     try:
-        params = resend.Emails.SendParams(
-            from_="Clínica Abriness <onboarding@resend.dev>",
-            to=[mail_destino],
-            subject="✅ Turno confirmado — Clínica Abriness",
-            html=html,
-        )
+        params: resend.Emails.SendParams = {
+            "from": "Clínica Abriness <onboarding@resend.dev>",
+            "to": [mail_destino],
+            "subject": "✅ Turno confirmado — Clínica Abriness",
+            "html": html,
+        }
         r = resend.Emails.send(params)
         logging.warning(f"[📧 RESEND] ✅ Mail enviado. ID: {r.get('id')}")
         return True
