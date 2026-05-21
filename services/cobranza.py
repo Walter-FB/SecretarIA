@@ -69,24 +69,26 @@ def generar_mensaje_cobro(especialidad: str = None, cobertura: str = None, obra_
     if modalidad == "obra social" and obra_social:
         obra_social_nombre = obra_social.strip()
 
+    precio_particular = TARIFAS[especialidad_norm]["particular"]
     monto = _calcular_tarifa(especialidad_norm, modalidad)
-    mensaje = f"¡Hola! Te pasamos el detalle para abonar tu consulta con el {especialidad_norm.capitalize()}:\n"
+
+    esp_display = "Psicólogo" if especialidad_norm == "psicologo" else "Psiquiatra"
+    mensaje = f"Te paso el detalle para abonar tu consulta con el {esp_display}:\n\n"
 
     if modalidad == "obra social":
-        obra_social_nombre = obra_social_nombre or cobertura or "obra social"
-        descuento = TARIFAS[especialidad_norm]["particular"] - monto
-        mensaje += f"- Modalidad: Obra Social - {obra_social_nombre}\n"
-        mensaje += f"- Total a pagar: ${monto}\n"
-        mensaje += f"Gracias a tu cobertura, tenés un descuento de ${descuento} sobre la tarifa particular.\n\n"
+        obra_social_nombre = obra_social_nombre or cobertura or "Obra Social"
+        descuento = precio_particular - monto
+        mensaje += f"Precio de lista: ${precio_particular:,}\n"
+        mensaje += f"Descuento {obra_social_nombre}: -${descuento:,}\n"
+        mensaje += f"Total a pagar: ${monto:,}\n\n"
     else:
-        mensaje += "- Modalidad: Particular\n"
-        mensaje += f"- Total a pagar: ${monto}\n\n"
+        mensaje += f"Total a pagar: ${monto:,}\n\n"
 
-    mensaje += "Para confirmar el turno, podés realizar la transferencia a los siguientes datos:\n"
-    mensaje += f"• Titular: {PAGO_INFO['titular']}\n"
+    mensaje += "Datos para transferir:\n"
     mensaje += f"• Alias: {PAGO_INFO['alias']}\n"
+    mensaje += f"• Titular: {PAGO_INFO['titular']}\n"
     mensaje += f"• CVU: {PAGO_INFO['cvu']}\n\n"
-    mensaje += "Por favor, verificar dicha información y pasar el siguiente comprobante de pago en el siguiente mensaje para registrarlo en el sistema. ¡Muchas gracias!"
+    mensaje += "Una vez hecha la transferencia, mandanos el comprobante por este chat para registrar el pago. ¡Gracias!"
 
     return mensaje
 
