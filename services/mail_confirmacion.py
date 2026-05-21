@@ -16,6 +16,9 @@ def _build_html(
     dni: str,
     numero_afiliado: str,
     fecha_nacimiento: str,
+    monto: int = None,
+    descuento: int = None,
+    precio_lista: int = None,
 ) -> str:
     esp_display = ESPECIALIDAD_DISPLAY.get(
         (especialidad or "").lower(), especialidad or "Consulta"
@@ -35,6 +38,33 @@ def _build_html(
         if fecha_nacimiento
         else ""
     )
+
+    if monto:
+        if descuento and precio_lista:
+            os_nombre = (obra_social or "Obra Social") if obra_social and obra_social.lower() != "particular" else "Obra Social"
+            pago_rows = f"""
+              <tr><td class="lbl">Precio de lista</td><td>${precio_lista:,}</td></tr>
+              <tr><td class="lbl">Descuento {os_nombre}</td><td style="color:#2fa8b8">-${descuento:,}</td></tr>
+              <tr><td class="lbl" style="font-weight:700;color:#333">Total a pagar</td><td style="font-weight:700;color:#1a6e7e">${monto:,}</td></tr>"""
+        else:
+            pago_rows = f'<tr><td class="lbl" style="font-weight:700;color:#333">Total a pagar</td><td style="font-weight:700;color:#1a6e7e">${monto:,}</td></tr>'
+
+        pago_section = f"""
+    <div class="info-card">
+      <div class="ic-title">Detalle del Pago</div>
+      <table>{pago_rows}
+      </table>
+    </div>
+    <div class="info-card">
+      <div class="ic-title">Datos para Transferir</div>
+      <table>
+        <tr><td class="lbl">Alias</td><td><strong>juan9910</strong></td></tr>
+        <tr><td class="lbl">Titular</td><td>Juan Manuel Barros Ferreyra</td></tr>
+        <tr><td class="lbl">CVU</td><td>124235243423432432</td></tr>
+      </table>
+    </div>"""
+    else:
+        pago_section = ""
 
     return f"""<!DOCTYPE html>
 <html lang="es">
@@ -103,6 +133,8 @@ def _build_html(
       </table>
     </div>
 
+    {pago_section}
+
     <div class="tip">
       &#x1F4CC; Presentate <strong>10 minutos antes</strong> de tu turno.<br>
       Para cancelar o reprogramar, avisanos con anticipaci&oacute;n por WhatsApp.
@@ -128,6 +160,9 @@ async def enviar_mail_confirmacion(
     dni: str = None,
     numero_afiliado: str = None,
     fecha_nacimiento: str = None,
+    monto: int = None,
+    descuento: int = None,
+    precio_lista: int = None,
 ) -> bool:
     """Sends the HTML confirmation email via Resend. Returns True on success."""
     if not mail_destino:
@@ -143,7 +178,7 @@ async def enviar_mail_confirmacion(
     nombre        = nombre or "Paciente"
     detalle_turno = detalle_turno or "Tu próximo turno en Clínica Abriness"
 
-    html = _build_html(nombre, especialidad, detalle_turno, obra_social, dni, numero_afiliado, fecha_nacimiento)
+    html = _build_html(nombre, especialidad, detalle_turno, obra_social, dni, numero_afiliado, fecha_nacimiento, monto, descuento, precio_lista)
 
     logging.warning(f"[📧 RESEND] Enviando a {mail_destino} | nombre={nombre} | especialidad={especialidad}")
     try:

@@ -163,16 +163,27 @@ async def _enviar_email_confirmacion(cliente: Cliente, detalle_turno: str, espec
     from services.mail_confirmacion import enviar_mail_confirmacion
     datos = cliente.datos_extraidos or {}
     esp   = datos.get("especialidad_turno") or _normalizar_especialidad(especialidad)
-    logging.warning(f"[📧 MAIL] Preparando envío a {cliente.mail} | nombre={cliente.nombre_completo} | especialidad={esp} | turno={detalle_turno}")
+
+    # Calcular montos para incluir en el mail
+    cobertura = cliente.obra_social or "particular"
+    modalidad, _ = _normalizar_cobertura(cobertura)
+    monto         = _calcular_tarifa(esp, modalidad)
+    precio_lista  = TARIFAS.get(esp, TARIFAS["psicologo"])["particular"]
+    descuento     = (precio_lista - monto) if modalidad == "obra social" else None
+
+    logging.warning(f"[📧 MAIL] Preparando envío a {cliente.mail} | nombre={cliente.nombre_completo} | especialidad={esp} | monto={monto}")
     ok = await enviar_mail_confirmacion(
-        mail_destino    = cliente.mail,
-        nombre          = cliente.nombre_completo or datos.get("nombre_contacto", "Paciente"),
-        especialidad    = esp,
-        detalle_turno   = detalle_turno,
-        obra_social     = cliente.obra_social,
-        dni             = cliente.dni,
-        numero_afiliado = cliente.numero_afiliado,
+        mail_destino     = cliente.mail,
+        nombre           = cliente.nombre_completo or datos.get("nombre_contacto", "Paciente"),
+        especialidad     = esp,
+        detalle_turno    = detalle_turno,
+        obra_social      = cliente.obra_social,
+        dni              = cliente.dni,
+        numero_afiliado  = cliente.numero_afiliado,
         fecha_nacimiento = cliente.fecha_nacimiento,
+        monto            = monto,
+        descuento        = descuento,
+        precio_lista     = precio_lista if descuento else None,
     )
     if ok:
         logging.warning(f"[📧 MAIL] ✅ Confirmación enviada exitosamente a {cliente.mail}")
