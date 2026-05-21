@@ -1,6 +1,6 @@
 import os
 import logging
-import resend
+import httpx
 
 ESPECIALIDAD_DISPLAY = {
     "psiquiatra": "Psiquiatría — Dr. Barros",
@@ -169,29 +169,36 @@ async def enviar_mail_confirmacion(
         logging.warning("[📧 MAIL] Sin dirección de email, no se envía.")
         return False
 
-    api_key = os.getenv("RESEND_API_KEY")
+    api_key = os.getenv("BREVO_API_KEY")
     if not api_key:
-        logging.warning("[📧 MAIL] ❌ Falta RESEND_API_KEY en las variables de entorno.")
+        logging.warning("[📧 MAIL] ❌ Falta BREVO_API_KEY en las variables de entorno.")
         return False
 
-    resend.api_key = api_key
     nombre        = nombre or "Paciente"
     detalle_turno = detalle_turno or "Tu próximo turno en Clínica Abriness"
 
     html = _build_html(nombre, especialidad, detalle_turno, obra_social, dni, numero_afiliado, fecha_nacimiento, monto, descuento, precio_lista)
 
-    logging.warning(f"[📧 RESEND] Enviando a {mail_destino} | nombre={nombre} | especialidad={especialidad}")
+    logging.warning(f"[📧 BREVO] Enviando a {mail_destino} | nombre={nombre} | especialidad={especialidad}")
     try:
-        params: resend.Emails.SendParams = {
-            "from": "Clínica Abriness <onboarding@resend.dev>",
-            "to": [mail_destino],
-            "subject": "✅ Turno confirmado — Clínica Abriness",
-            "html": html,
-        }
-        r = resend.Emails.send(params)
-        logging.warning(f"[📧 RESEND] ✅ Mail enviado. ID: {r.get('id')}")
-        return True
+        r = httpx.post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers={"api-key": api_key, "Content-Type": "application/json"},
+            json={
+                "sender":      {"name": "Clínica Abriness", "email": "abrinesclinica@gmail.com"},
+                "to":          [{"email": mail_destino}],
+                "subject":     "✅ Turno confirmado — Clínica Abriness",
+                "htmlContent": html,
+            },
+            timeout=15,
+        )
+        if r.status_code in (200, 201):
+            logging.warning(f"[📧 BREVO] ✅ Mail enviado a {mail_destino}")
+            return True
+        else:
+            logging.warning(f"[📧 BREVO] ❌ Error {r.status_code}: {r.text}")
+            return False
     except Exception as e:
-        logging.warning(f"[📧 RESEND] ❌ Error al enviar a {mail_destino}: {e}")
+        logging.warning(f"[📧 BREVO] ❌ Excepción al enviar a {mail_destino}: {e}")
         import traceback; logging.warning(traceback.format_exc())
         return False
