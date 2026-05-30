@@ -1,7 +1,4 @@
 import os
-import sys
-import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
@@ -21,11 +18,11 @@ engine = create_engine(SQLALCHEMY_DATABASE_URL)
 try:
     with engine.connect() as connection:
         if "sqlite" in SQLALCHEMY_DATABASE_URL:
-            print("🟢 CONECTADO A LA BASE DE DATOS LOCAL (SQLite)")
+            print("[DB] Conectado a SQLite local")
         else:
-            print("🟢 CONECTADO A LA BASE DE DATOS EN LA NUBE (PostgreSQL)")
+            print("[DB] Conectado a PostgreSQL (Railway)")
 except Exception as e:
-    print(f"🔴 ERROR AL CONECTAR A LA BASE DE DATOS: {e}")
+    print(f"[DB ERROR] No se pudo conectar: {e}")
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
