@@ -3,77 +3,59 @@ import re
 import logging
 
 from services.secretaria_principal import enviar_mensaje_wpp, enviar_notificacion_a_walter, marcar_leido_wpp
+from services.profesionales import (
+    get_profesional_by_nombre,
+    get_profesional_by_especialidad,
+    get_tarifa,
+    _normalizar_especialidad,
+)
 from database import SessionLocal
 from models import Cliente
 
 _EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
 
-TARIFAS = {
-    "psicologo": {"particular": 30000, "obra social": 19000},
-    "psiquiatra": {"particular": 80000, "obra social": 45000},
-}
-
 PAGO_INFO = {
     "titular": "Juan Manuel Barros Ferreyra",
-    "alias": "juan9910",
-    "cvu": "124235243423432432",
+    "alias":   "juan9910",
+    "cvu":     "124235243423432432",
 }
-
-
-def _normalizar_texto(texto: str) -> str:
-    if not texto:
-        return ""
-    texto_norm = unicodedata.normalize("NFKD", texto)
-    texto_norm = texto_norm.encode("ascii", "ignore").decode("ascii")
-    return texto_norm.strip().lower()
-
-
-def _normalizar_especialidad(especialidad: str) -> str:
-    if not especialidad:
-        return "psicologo"
-
-    valor = _normalizar_texto(especialidad)
-    if "psiquiatra" in valor or "psiquiatria" in valor or "dr. barros" in valor:
-        return "psiquiatra"
-    if "psicologo" in valor or "psicologia" in valor or "lic." in valor or "lic " in valor or "renals" in valor:
-        return "psicologo"
-    return "psicologo"
 
 
 def _normalizar_cobertura(cobertura: str):
     if not cobertura:
         return "particular", None
-
-    texto = cobertura.strip()
-    texto_lower = texto.lower()
+    texto_lower = cobertura.strip().lower()
     if "particular" in texto_lower:
         return "particular", None
-
-    return "obra social", texto
-
-
-def _calcular_tarifa(especialidad: str, modalidad: str) -> int:
-    especialidad_norm = _normalizar_especialidad(especialidad)
-    modalidad_norm = modalidad.strip().lower() if modalidad else "particular"
-    if especialidad_norm not in TARIFAS:
-        especialidad_norm = "psicologo"
-    if modalidad_norm not in TARIFAS[especialidad_norm]:
-        modalidad_norm = "particular"
-
-    return TARIFAS[especialidad_norm][modalidad_norm]
+    return "obra social", cobertura.strip()
 
 
-def generar_mensaje_cobro(especialidad: str = None, cobertura: str = None, obra_social: str = None) -> str:
-    especialidad_norm = _normalizar_especialidad(especialidad)
+def _resolver_profesional(db, especialidad: str | None):
+    """Devuelve el objeto Profesional más apropiado dado un string de especialidad o nombre."""
+    if not especialidad:
+        return get_profesional_by_especialidad(db, "psicologo")
+
+    # Intentar primero por nombre (ej: "Lic. Renals", "Dr. Barros")
+    por_nombre = get_profesional_by_nombre(db, especialidad)
+    if por_nombre:
+        return por_nombre
+
+    # Fallback por especialidad normalizada
+    return get_profesional_by_especialidad(db, _normalizar_especialidad(especialidad))
+
+
+def generar_mensaje_cobro(db, especialidad: str = None, cobertura: str = None, obra_social: str = None) -> str:
+    profesional = _resolver_profesional(db, especialidad)
     modalidad, obra_social_nombre = _normalizar_cobertura(cobertura)
     if modalidad == "obra social" and obra_social:
         obra_social_nombre = obra_social.strip()
 
-    precio_particular = TARIFAS[especialidad_norm]["particular"]
-    monto = _calcular_tarifa(especialidad_norm, modalidad)
+    monto           = get_tarifa(profesional, modalidad)
+    precio_particular = profesional.tarifa_particular if profesional else monto
+    esp_display       = "Psicólogo" if (not profesional or profesional.especialidad == "psicologo") else "Psiquiatra"
+    prof_nombre       = profesional.nombre if profesional else esp_display
 
-    esp_display = "Psicólogo" if especialidad_norm == "psicologo" else "Psiquiatra"
-    mensaje = f"Te paso el detalle para abonar tu consulta con el {esp_display}:\n\n"
+    mensaje = f"Te paso el detalle para abonar tu consulta con {prof_nombre}:\n\n"
 
     if modalidad == "obra social":
         obra_social_nombre = obra_social_nombre or cobertura or "Obra Social"
@@ -88,7 +70,7 @@ def generar_mensaje_cobro(especialidad: str = None, cobertura: str = None, obra_
     mensaje += f"• Alias: {PAGO_INFO['alias']}\n"
     mensaje += f"• Titular: {PAGO_INFO['titular']}\n"
     mensaje += f"• CVU: {PAGO_INFO['cvu']}\n\n"
-    mensaje += "Una vez hecha la transferencia, mandanos el comprobante por este chat para registrar el pago. ¡Gracias!"
+    mensaje += "Una vez hecha la transferencia, mandanos el comprobante por este chat. ¡Gracias!"
 
     return mensaje
 
@@ -101,129 +83,138 @@ async def iniciar_cobranzas(
     detalle_turno: str = None,
 ) -> str:
     """
-    Sends payment instructions and, if an appointment was confirmed (detalle_turno provided),
-    either sends the confirmation email immediately or asks the client for their email first.
-    Returns the next estado_agente: 'manual' or 'esperando_mail'.
+    Envía instrucciones de pago y, si hay turno confirmado, gestiona el email.
+    Retorna el próximo estado_agente: 'principal' o 'esperando_mail'.
     """
     logging.warning(f"[💸 COBRANZAS] Iniciando para {to_number} | especialidad={especialidad} | cobertura={cobertura} | detalle_turno={detalle_turno}")
     db = SessionLocal()
     try:
         cliente = db.query(Cliente).filter(Cliente.telefono == to_number).first()
+
+        # Completar cobertura desde BD si no llegó por parámetro
         if cliente and not cobertura:
             cobertura = cliente.obra_social
-            logging.warning(f"[💸 COBRANZAS] Cobertura tomada de DB: {cobertura}")
+            logging.warning(f"[💸 COBRANZAS] Cobertura tomada de BD: {cobertura}")
 
-        # Persist turno details for the confirmation email
+        # Completar especialidad desde profesional_id si no llegó por parámetro
+        if cliente and not especialidad and cliente.profesional_id:
+            from models import Profesional
+            prof = db.query(Profesional).filter(Profesional.id == cliente.profesional_id).first()
+            if prof:
+                especialidad = prof.nombre
+                logging.warning(f"[💸 COBRANZAS] Especialidad tomada de profesional del cliente: {especialidad}")
+
+        # Guardar detalle de turno para el email de confirmación
         if cliente and detalle_turno:
             datos = dict(cliente.datos_extraidos or {})
-            datos["ultimo_turno"]     = detalle_turno
-            datos["especialidad_turno"] = _normalizar_especialidad(especialidad)
-            cliente.datos_extraidos   = datos
+            prof  = _resolver_profesional(db, especialidad)
+            datos["ultimo_turno"]       = detalle_turno
+            datos["especialidad_turno"] = prof.especialidad if prof else _normalizar_especialidad(especialidad)
+            cliente.datos_extraidos = datos
             db.commit()
-            logging.warning(f"[💸 COBRANZAS] Turno guardado en datos_extraidos: {detalle_turno}")
+            logging.warning(f"[💸 COBRANZAS] Turno guardado: {detalle_turno}")
 
-        mensaje = generar_mensaje_cobro(especialidad, cobertura, obra_social)
+        mensaje = generar_mensaje_cobro(db, especialidad, cobertura, obra_social)
         await enviar_mensaje_wpp(to_number, mensaje)
         logging.warning(f"[💸 COBRANZAS] Mensaje de cobro enviado a {to_number}")
 
         nombre = "un paciente"
         if cliente:
-            if cliente.nombre_completo:
-                nombre = cliente.nombre_completo
-            elif cliente.datos_extraidos and "nombre_contacto" in cliente.datos_extraidos:
-                nombre = cliente.datos_extraidos["nombre_contacto"]
+            nombre = cliente.nombre_completo or (cliente.datos_extraidos or {}).get("nombre_contacto", "un paciente")
 
         await enviar_notificacion_a_walter(to_number, nombre)
-        logging.warning(f"[💸 COBRANZAS] Notificación enviada a Walter sobre {to_number}")
+        logging.warning(f"[💸 COBRANZAS] Notificación enviada a Walter")
 
-        # Email logic — only when an appointment was actually confirmed
+        # Email: solo si hay turno confirmado
         if detalle_turno:
-            logging.warning(f"[📧 COBRANZAS] Turno confirmado, evaluando email para {to_number} | mail_guardado={cliente.mail if cliente else 'sin cliente'}")
             if cliente and cliente.mail:
-                logging.warning(f"[📧 COBRANZAS] Mail ya registrado ({cliente.mail}), enviando confirmación directo.")
-                await _enviar_email_confirmacion(cliente, detalle_turno, especialidad)
-                return "manual"
+                logging.warning(f"[📧 COBRANZAS] Mail ya registrado ({cliente.mail}), enviando confirmación.")
+                await _enviar_email_confirmacion(cliente, detalle_turno, especialidad, db)
+                return "principal"
             else:
-                logging.warning(f"[📧 COBRANZAS] Sin mail registrado, pidiendo al cliente.")
+                logging.warning(f"[📧 COBRANZAS] Sin mail, pidiendo al cliente.")
                 await enviar_mensaje_wpp(
                     to_number,
                     "Por último, para enviarte la confirmación del turno por mail, "
                     "¿me podés pasar tu dirección de correo electrónico?"
                 )
                 return "esperando_mail"
-        else:
-            logging.warning(f"[💸 COBRANZAS] Sin detalle_turno — solo consulta de precio, no se manda mail.")
 
-        return "manual"
+        return "principal"
+
     finally:
         db.close()
 
 
-async def _enviar_email_confirmacion(cliente: Cliente, detalle_turno: str, especialidad: str = None) -> None:
+async def _enviar_email_confirmacion(cliente: Cliente, detalle_turno: str, especialidad: str = None, db=None) -> None:
     from services.mail_confirmacion import enviar_mail_confirmacion
-    datos = cliente.datos_extraidos or {}
-    esp   = datos.get("especialidad_turno") or _normalizar_especialidad(especialidad)
 
-    # Calcular montos para incluir en el mail
-    cobertura = cliente.obra_social or "particular"
-    modalidad, _ = _normalizar_cobertura(cobertura)
-    monto         = _calcular_tarifa(esp, modalidad)
-    precio_lista  = TARIFAS.get(esp, TARIFAS["psicologo"])["particular"]
-    descuento     = (precio_lista - monto) if modalidad == "obra social" else None
+    close_db = False
+    if db is None:
+        db = SessionLocal()
+        close_db = True
 
-    logging.warning(f"[📧 MAIL] Preparando envío a {cliente.mail} | nombre={cliente.nombre_completo} | especialidad={esp} | monto={monto}")
-    ok = await enviar_mail_confirmacion(
-        mail_destino     = cliente.mail,
-        nombre           = cliente.nombre_completo or datos.get("nombre_contacto", "Paciente"),
-        especialidad     = esp,
-        detalle_turno    = detalle_turno,
-        obra_social      = cliente.obra_social,
-        dni              = cliente.dni,
-        numero_afiliado  = cliente.numero_afiliado,
-        fecha_nacimiento = cliente.fecha_nacimiento,
-        monto            = monto,
-        descuento        = descuento,
-        precio_lista     = precio_lista if descuento else None,
-    )
-    if ok:
-        logging.warning(f"[📧 MAIL] ✅ Confirmación enviada exitosamente a {cliente.mail}")
-    else:
-        logging.warning(f"[📧 MAIL] ❌ Falló el envío a {cliente.mail}")
+    try:
+        datos = cliente.datos_extraidos or {}
+        prof  = _resolver_profesional(db, especialidad or datos.get("especialidad_turno"))
+        esp   = prof.especialidad if prof else _normalizar_especialidad(especialidad)
+
+        cobertura  = cliente.obra_social or "particular"
+        modalidad, _ = _normalizar_cobertura(cobertura)
+        monto        = get_tarifa(prof, modalidad)
+        precio_lista = prof.tarifa_particular if prof else monto
+        descuento    = (precio_lista - monto) if modalidad == "obra social" else None
+
+        logging.warning(f"[📧 MAIL] Preparando envío a {cliente.mail} | nombre={cliente.nombre_completo} | monto={monto}")
+        ok = await enviar_mail_confirmacion(
+            mail_destino     = cliente.mail,
+            nombre           = cliente.nombre_completo or datos.get("nombre_contacto", "Paciente"),
+            especialidad     = esp,
+            detalle_turno    = detalle_turno,
+            obra_social      = cliente.obra_social,
+            dni              = cliente.dni,
+            numero_afiliado  = cliente.numero_afiliado,
+            fecha_nacimiento = cliente.fecha_nacimiento,
+            monto            = monto,
+            descuento        = descuento,
+            precio_lista     = precio_lista if descuento else None,
+        )
+        level = "✅" if ok else "❌"
+        logging.warning(f"[📧 MAIL] {level} Envío a {cliente.mail}: {'OK' if ok else 'FALLÓ'}")
+    finally:
+        if close_db:
+            db.close()
 
 
 async def handler_esperando_mail(user_text: str, to_number: str, msg_id: str = None) -> None:
-    """Handles the 'esperando_mail' state: validates the email, saves it, sends confirmation."""
+    """Maneja el estado 'esperando_mail': valida el email, lo guarda y envía confirmación."""
     logging.warning(f"[📧 ESPERANDO_MAIL] Recibido de {to_number}: '{user_text}'")
     await marcar_leido_wpp(msg_id)
 
     texto = user_text.strip()
-
-    db = SessionLocal()
+    db    = SessionLocal()
     try:
         cliente = db.query(Cliente).filter(Cliente.telefono == to_number).first()
         if not cliente:
-            logging.warning(f"[📧 ESPERANDO_MAIL] ⚠️ Cliente {to_number} no encontrado en DB.")
+            logging.warning(f"[📧 ESPERANDO_MAIL] ⚠️ Cliente {to_number} no encontrado.")
             return
 
         if _EMAIL_RE.match(texto):
-            logging.warning(f"[📧 ESPERANDO_MAIL] Email válido recibido: {texto}. Guardando y enviando confirmación.")
-            cliente.mail         = texto
-            cliente.estado_agente = "manual"
+            logging.warning(f"[📧 ESPERANDO_MAIL] Email válido: {texto}")
+            cliente.mail          = texto
+            cliente.estado_agente = "principal"
             db.commit()
 
-            await enviar_mensaje_wpp(
-                to_number,
-                "¡Perfecto! Ya te envío la confirmación del turno a ese correo. ¡Hasta pronto!"
-            )
+            await enviar_mensaje_wpp(to_number, "¡Perfecto! Ya te envío la confirmación del turno a ese correo. ¡Hasta pronto!")
 
             datos        = cliente.datos_extraidos or {}
             detalle      = datos.get("ultimo_turno", "Tu próximo turno en Clínica Abriness")
             especialidad = datos.get("especialidad_turno")
-            logging.warning(f"[📧 ESPERANDO_MAIL] Disparando email | detalle={detalle} | especialidad={especialidad}")
-            await _enviar_email_confirmacion(cliente, detalle, especialidad)
+            logging.warning(f"[📧 ESPERANDO_MAIL] Disparando email | detalle={detalle}")
+            await _enviar_email_confirmacion(cliente, detalle, especialidad, db)
 
         else:
-            logging.warning(f"[📧 ESPERANDO_MAIL] Email inválido recibido: '{texto}'")
+            logging.warning(f"[📧 ESPERANDO_MAIL] Email inválido: '{texto}'")
             await enviar_mensaje_wpp(
                 to_number,
                 "Hmm, eso no parece un email válido 🤔\n"

@@ -16,8 +16,9 @@ import models  # noqa: F401 — necesario para que Base.metadata conozca las tab
 Base.metadata.create_all(bind=engine)
 
 # Asegurarse de que exista la empresa por defecto
-from init_db import seed_empresa_default
+from init_db import seed_empresa_default, seed_profesionales
 seed_empresa_default()
+seed_profesionales()
 
 # Importamos las rutas
 from routes import whatsapp

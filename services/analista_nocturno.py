@@ -52,44 +52,40 @@ async def job_analista_nocturno():
                 
                 tool_analisis = {
                     "name": "analisis_charla",
-                    "description": "Clasifica y resume el estado de una conversación.",
+                    "description": "Clasifica el estado de la conversación del día.",
                     "input_schema": {
                         "type": "object",
                         "properties": {
-                            "nombre_contacto": {"type": "string", "description": "Nombre del cliente."},
-                            "rubro_empresa": {"type": "string", "description": "Rubro o actividad."},
-                            "necesidad_cliente": {"type": "string", "description": "Qué necesita resolver."},
                             "estado_charla": {
                                 "type": "string",
                                 "enum": ["cerrada", "en_progreso", "fria", "perdida"],
-                                "description": "Estado actual de la charla de venta."
+                                "description": "Estado actual de la conversación."
                             },
-                            "resumen_situacion": {"type": "string", "description": "Resumen de MÁXIMO 3 líneas."}
+                            "resumen_nocturno": {
+                                "type": "string",
+                                "description": "Resumen del día en 1-3 líneas."
+                            }
                         },
-                        "required": ["estado_charla", "resumen_situacion"]
+                        "required": ["estado_charla", "resumen_nocturno"]
                     }
                 }
-                
-                system_prompt = f"""Sos un analista de ventas interno. NO hablás con el cliente.
-Tu trabajo es leer el historial de esta conversación y clasificarla.
 
-Datos previos del cliente:
-{datos_actuales}
+                system_prompt = f"""Sos un analista interno. NO hablás con el paciente.
+Leé el historial del día y clasificá la conversación.
 
-ESTADOS POSIBLES:
-- cerrada: El cliente agendó reunión o se resolvió su consulta.
+Contexto previo del paciente:
+{datos_actuales.get('resumen_situacion', 'Sin contexto previo')}
+
+ESTADOS:
+- cerrada: El paciente agendó turno o su consulta fue resuelta.
 - en_progreso: Hay interés activo, la charla sigue viva.
-- fria: El cliente dejó de responder o mostró poco interés.
-- perdida: El cliente rechazó explícitamente o pidió no ser contactado.
+- fria: El paciente dejó de responder o mostró poco interés.
+- perdida: El paciente rechazó explícitamente o pidió no ser contactado.
 
-INSTRUCCIONES:
-1. Usá la herramienta 'analisis_charla'.
-2. Si un dato ya existe y es correcto, mandalo igual.
-3. Clasificá el estado según la definición de arriba.
-4. El resumen debe ser de 1 a 3 líneas."""
+Usá la herramienta 'analisis_charla'. El resumen debe ser de 1 a 3 líneas."""
 
                 response = client_claude.messages.create(
-                    model="claude-3-haiku-20240307",
+                    model="claude-haiku-4-5",
                     max_tokens=300,
                     system=system_prompt,
                     tools=[tool_analisis],
@@ -100,12 +96,15 @@ INSTRUCCIONES:
                 for block in response.content:
                     if block.type == "tool_use":
                         resultado = block.input
-                        estado = resultado.get("estado_charla", "en_progreso")
-                        resumen = resultado.get("resumen_situacion", "Sin resumen")
-                        
-                        datos_actuales.update(resultado)
+                        estado  = resultado.get("estado_charla", "en_progreso")
+                        resumen = resultado.get("resumen_nocturno", "")
+
+                        # Merge explícito: solo escribe los campos del nocturno,
+                        # nunca pisa resumen_situacion (del analista de transición).
+                        datos_actuales["estado_charla"]    = estado
+                        datos_actuales["resumen_nocturno"] = resumen
                         cliente.datos_extraidos = datos_actuales
-                        
+
                         print(f"[🌙] {cliente.telefono}: {estado} — {resumen}")
                         
                         if estado in ("fria", "perdida"):

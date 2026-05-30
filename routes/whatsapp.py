@@ -41,6 +41,12 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
 
         # Solo procesamos mensajes de texto
         if "text" not in message:
+            from services.secretaria_principal import enviar_mensaje_wpp
+            background_tasks.add_task(
+                enviar_mensaje_wpp,
+                message["from"],
+                "Por ahora solo proceso mensajes de texto. Si querés enviar un comprobante de pago, escribí el número de operación o mandalo a Walter directamente."
+            )
             return Response(content="OK", status_code=200)
 
         text = message["text"]["body"]
@@ -113,6 +119,38 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
 
     # Obligatorio devolver 200 rápido a Meta
     return Response(content="OK", status_code=200)
+
+
+# ===================================================================
+# ENDPOINT PARA VER CONVERSACIÓN COMPLETA DE UN CLIENTE
+# ===================================================================
+@router.get("/conversacion/{telefono}")
+async def ver_conversacion(telefono: str):
+    db = SessionLocal()
+    try:
+        from models import Mensaje
+        cliente = db.query(Cliente).filter(Cliente.telefono == telefono).first()
+        if not cliente:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Cliente no encontrado")
+        mensajes = (
+            db.query(Mensaje)
+            .filter(Mensaje.cliente_id == cliente.id)
+            .order_by(Mensaje.fecha_creacion.asc())
+            .all()
+        )
+        return {
+            "telefono": telefono,
+            "estado_agente": cliente.estado_agente,
+            "nombre": cliente.nombre_completo,
+            "datos_extraidos": cliente.datos_extraidos or {},
+            "mensajes": [
+                {"rol": m.rol, "texto": m.texto, "fecha": m.fecha_creacion.isoformat()}
+                for m in mensajes
+            ]
+        }
+    finally:
+        db.close()
 
 
 # ===================================================================

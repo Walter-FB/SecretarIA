@@ -485,7 +485,7 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
                             "tool_use_id": tool.id,
                             "content":     f"Walter notificado. Emergencia: {es_emergencia}."
                         })
-                        derivar = "manual"
+                        derivar = "principal"
 
                 except Exception as e:
                     logging.warning(f"[❌ ERROR EN TOOL {tool_name}]: {e}")
@@ -511,8 +511,6 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
                     cliente.estado_agente = next_state
                 elif derivar == "principal":
                     cliente.estado_agente = "principal"
-                elif derivar == "manual":
-                    cliente.estado_agente = "manual"
                 db.commit()
                 break
 

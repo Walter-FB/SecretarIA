@@ -1,4 +1,5 @@
 import httpx
+import logging
 from database import SessionLocal
 from models import Cliente, Mensaje, ColaAnalisis, Empresa
 from datetime import datetime, timedelta
@@ -9,17 +10,15 @@ import anthropic
 # ===================================================================
 # CONFIGURACIÓN
 # ===================================================================
-WPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
-PHONE_ID = os.getenv("PHONE_NUMBER_ID")
-CLAUDE_KEY = os.getenv("CLAUDE_API_KEY")
+WPP_TOKEN    = os.getenv("WHATSAPP_TOKEN")
+PHONE_ID     = os.getenv("PHONE_NUMBER_ID")
+CLAUDE_KEY   = os.getenv("CLAUDE_API_KEY")
 NUMERO_WALTER = "5491131720843"
 
 client_claude = anthropic.Anthropic(api_key=CLAUDE_KEY) if CLAUDE_KEY else None
 
 # ===================================================================
-# PROMPT DE LA SECRETARIA PRINCIPAL
-# Solo atiende, asesora y decide si escalar o agendar.
-# NO analiza, NO resume, NO toca Calendar.
+# PROMPT DE ABBY
 # ===================================================================
 SYSTEM_PROMPT_PRINCIPAL = """<IDENTIDAD>
 Sos Abby, la asistente virtual de la Clínica Abriness, especializada en salud mental. Sos el primer contacto del paciente por WhatsApp.
@@ -41,12 +40,15 @@ Llevás la charla de forma natural hasta que el paciente esté listo para agenda
 
 Si es primera vez, pedile todos sus datos juntos de forma natural: nombre completo, DNI, obra social y número de afiliado, fecha de nacimiento, mail (opcional).
 
+Si NO es primera vez, pedile el DNI para buscarlo en el sistema y llamá a verificar_paciente_existente. Si encontramos sus datos confirmás el nombre con el paciente y procedés. Si no los encontramos, pedile todos los datos como si fuera primera vez.
+
 Cuando tengas todo y solo si tenes todos los datos, llamás a registrar_paciente y luego a iniciar_agendamiento. si te falta algun dato se lo preguntas muy amablemente. Ahí termina tu trabajo.
 esta charla se desarrolla por whatsapp message a message nada de enviar mensajes largos ni nada por el estilo, sean breves y acordes a la situacion.
 </TU_TRABAJO>
 
 <DERIVACIONES>
 LISTO PARA AGENDAR → registrar_paciente (si es primera vez) → iniciar_agendamiento
+NO ES PRIMERA VEZ → verificar_paciente_existente (DNI) → iniciar_agendamiento
 Pasás especialidad y cobertura.
 
 
@@ -70,7 +72,7 @@ si no te preguntan nada en concreto inicias la charla con un: Hola! Soy Abby, as
 P: Hola, quiero agendar un turno.
 A: Hola! Soy Abby. ¿Con qué especialidad te querés atender, psicología o psiquiatría?
 P: No sé bien, lo más próximo posible.
-A: Contamos con psicología y psiquiatría. ¿Que especialidad andabas buscando? 
+A: Contamos con psicología y psiquiatría. ¿Que especialidad andabas buscando?
 A: Perfecto. ¿Es tu primera vez en la clínica?
 P: Sí.
 A: ¿Obra social o particular? 😊
@@ -85,8 +87,9 @@ A: Listo, quedaste registrado.
 P: Hola, necesito turno con psiquiatría, tengo IOMA.
 A: Hola! ¿Es tu primera vez en la clínica?
 P: No, ya me atendí con el Dr. Barros.
-A: Perfecto, te gustaria agendar un turno?
-[→ iniciar_agendamiento con especialidad: psiquiatría, cobertura: IOMA]
+A: Perfecto, para buscarte dame tu DNI.
+P: 12345678
+[→ verificar_paciente_existente → "Encontré tus datos, sos Juan Pérez con IOMA, ¿es correcto?" → iniciar_agendamiento con especialidad: psiquiatría, cobertura: IOMA]
 
 — Especialidad no disponible —
 P: Quiero turno con un neurólogo.
@@ -101,63 +104,76 @@ P: Sí.
 — Crisis —
 P: No doy más, estoy muy mal.
 A: Entiendo que estás pasando por un momento muy difícil. si te parece bien voy a conectarte con alguien del equipo para que te pueda asistir apropiadamente dale? siempre que necesites siempre podes venir de urgencia a la clinica.
-P: Por favor 
+P: Por favor
 [→ notificar_walter_urgente con es_emergencia: true]
 </CHARLA_MODELO>
 
 <HERRAMIENTAS>
 - registrar_paciente: con todos los datos del paciente nuevo antes de agendar (asegurate de que te haya dado todo los datos en tu charla antes de llamar esta herramienta, si falta alguno pedicelo con educacion asi podes darlo de alta en el sistema)
+- verificar_paciente_existente: cuando el paciente dice que NO es primera vez. Pasás el DNI que te dió.
 - iniciar_agendamiento: cuando el paciente está listo, pasás especialidad y cobertura
 - iniciar_cobranzas: preguntas de precios, solo si el paciente acepta
 - notificar_walter_urgente: emergencias, recetas, frustración, pide humano
 </HERRAMIENTAS>"""
 
 # ===================================================================
-# TOOLS DE LA SECRETARIA PRINCIPAL (Solo 2)
+# TOOLS
 # ===================================================================
 TOOLS_PRINCIPAL = [
     {
         "name": "registrar_paciente",
-        "description": "Guarda los datos de un paciente nuevo. Obligatorio llamar antes de iniciar_agendamiento si es primera vez.",
+        "description": "Guarda los datos de un paciente nuevo. Llamar antes de iniciar_agendamiento si es primera vez o si verificar_paciente_existente no encontró resultados.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "nombre_completo": {"type": "string"},
-                "dni": {"type": "string"},
-                "obra_social": {"type": "string"},
-                "numero_afiliado": {"type": "string"},
-                "fecha_nacimiento": {"type": "string"},
-                "mail": {"type": "string"}
+                "nombre_completo":   {"type": "string"},
+                "dni":               {"type": "string"},
+                "obra_social":       {"type": "string"},
+                "numero_afiliado":   {"type": "string"},
+                "fecha_nacimiento":  {"type": "string"},
+                "mail":              {"type": "string"}
             },
             "required": ["nombre_completo", "dni", "obra_social", "numero_afiliado", "fecha_nacimiento"]
         }
     },
     {
-        "name": "iniciar_agendamiento",
-        "description": "Deriva a agendar turno. Usar cuando ya se completó el registro o el paciente es recurrente.",
+        "name": "verificar_paciente_existente",
+        "description": "Busca un paciente ya registrado por DNI. Usar cuando el paciente dice que NO es primera vez en la clínica.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "especialidad": {"type": "string", "enum": ["psicología", "psiquiatría"]},
-                "cobertura": {"type": "string"}
+                "dni": {"type": "string", "description": "DNI del paciente a buscar."}
+            },
+            "required": ["dni"]
+        }
+    },
+    {
+        "name": "iniciar_agendamiento",
+        "description": "Deriva a la agendadora para coordinar el turno. Usar cuando el paciente ya está registrado o verificado.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "especialidad":  {"type": "string", "enum": ["psicología", "psiquiatría"]},
+                "cobertura":     {"type": "string"},
+                "profesional":   {"type": "string", "description": "Nombre del profesional elegido (ej: 'Lic. Renals', 'Dr. Barros')."}
             },
             "required": ["especialidad", "cobertura"]
         }
     },
     {
         "name": "iniciar_cobranzas",
-        "description": "Deriva a cobranzas para consultas de precios/pagos, si el paciente aceptó ser derivado.",
+        "description": "Deriva a cobranzas para consultas de precios. Solo si el paciente aceptó ser derivado.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "especialidad": {"type": "string", "enum": ["psicología", "psiquiatría"], "description": "Especialidad consultada"},
-                "cobertura":    {"type": "string", "description": "Cobertura del paciente (particular u obra social con nombre)"}
+                "especialidad": {"type": "string", "enum": ["psicología", "psiquiatría"]},
+                "cobertura":    {"type": "string"}
             }
         }
     },
     {
         "name": "notificar_walter_urgente",
-        "description": "Escalar a un humano. Para emergencias, crisis, pedido de hablar con humano, recetas, o frustración.",
+        "description": "Escalar a un humano. Para emergencias, crisis, pedido de hablar con humano, recetas o frustración.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -170,46 +186,37 @@ TOOLS_PRINCIPAL = [
 
 
 # ===================================================================
-# FUNCIÓN AUXILIAR: Enviar mensaje de WhatsApp
+# HELPERS DE WHATSAPP
 # ===================================================================
 async def enviar_mensaje_wpp(to_number: str, texto: str):
-    """Envía un mensaje de texto por WhatsApp vía la API de Meta."""
-    url = f"https://graph.facebook.com/v22.0/{PHONE_ID}/messages"
+    url     = f"https://graph.facebook.com/v22.0/{PHONE_ID}/messages"
     headers = {"Authorization": f"Bearer {WPP_TOKEN}", "Content-Type": "application/json"}
     payload = {
         "messaging_product": "whatsapp",
-        "to": to_number,
+        "to":   to_number,
         "type": "text",
         "text": {"body": texto}
     }
     async with httpx.AsyncClient() as http:
         r = await http.post(url, json=payload, headers=headers)
         if r.status_code != 200:
-            print(f"\n[❌ ERROR META {r.status_code}]: {r.text}")
+            logging.warning(f"[❌ META {r.status_code}] {r.text}")
 
 
-# ===================================================================
-# FUNCIÓN AUXILIAR: Marcar como leído en WhatsApp
-# ===================================================================
 async def marcar_leido_wpp(msg_id: str):
-    """Envía el 'visto' azul en WhatsApp."""
     if not msg_id:
         return
-    url = f"https://graph.facebook.com/v22.0/{PHONE_ID}/messages"
+    url     = f"https://graph.facebook.com/v22.0/{PHONE_ID}/messages"
     headers = {"Authorization": f"Bearer {WPP_TOKEN}", "Content-Type": "application/json"}
     payload = {"messaging_product": "whatsapp", "status": "read", "message_id": msg_id}
     try:
         async with httpx.AsyncClient() as http:
             await http.post(url, json=payload, headers=headers)
-    except:
+    except Exception:
         pass
 
 
-# ===================================================================
-# FUNCIÓN AUXILIAR: Upsert en cola_analisis
-# ===================================================================
 def upsert_cola_analisis(db, cliente_id: str):
-    """Inserta o actualiza la fecha en cola_analisis. Se llama con cada mensaje nuevo."""
     stmt = pg_insert(ColaAnalisis).values(
         cliente_id=cliente_id,
         fecha_ultima_actividad=datetime.utcnow()
@@ -219,46 +226,73 @@ def upsert_cola_analisis(db, cliente_id: str):
     )
     db.execute(stmt)
     db.commit()
-    print(f"[📋 COLA] Upsert cola_analisis para cliente {cliente_id[:8]}...")
+    logging.warning(f"[📋 COLA] Upsert cola_analisis para {cliente_id[:8]}...")
 
 
-# ===================================================================
-# ENVÍO DE NOTIFICACIÓN A WALTER
-# ===================================================================
 async def enviar_notificacion_a_walter(numero_cliente: str, nombre_cliente: str):
-    """Avisa a Walter por WhatsApp que hay un cliente interesado."""
-    mensaje_walter = f"Cliente interezado!\nHola Walter! 🥰 Te informo que el numero {{{numero_cliente}}} a nombre de {{{nombre_cliente}}} estaría interesado en contactarte. Háblale, suerte y saludos! 👋"
-    
+    mensaje_walter = (
+        f"Cliente interezado!\nHola Walter! 🥰 Te informo que el numero {{{numero_cliente}}} "
+        f"a nombre de {{{nombre_cliente}}} estaría interesado en contactarte. Háblale, suerte y saludos! 👋"
+    )
     try:
         await enviar_mensaje_wpp(NUMERO_WALTER, mensaje_walter)
-        print("[✅ NOTIFICACIÓN] Se avisó a Walter sobre el nuevo cliente interesado.")
+        logging.warning("[✅ NOTIFICACIÓN] Walter avisado.")
     except Exception as e:
-        print(f"[❌ ERROR NOTIFICACIÓN WALTER]: {e}")
+        logging.warning(f"[❌ NOTIFICACIÓN WALTER]: {e}")
 
 
 # ===================================================================
-# SECRETARIA PRINCIPAL — Función orquestadora
+# CONSTRUCCIÓN DEL SYSTEM PROMPT CON MEMORIA
+# ===================================================================
+def _build_system_prompt(cliente: Cliente, db) -> str:
+    datos = cliente.datos_extraidos or {}
+    nombre  = cliente.nombre_completo or datos.get("nombre_contacto", "")
+    resumen = datos.get("resumen_situacion", "")
+
+    lineas_memoria = []
+    if nombre:                   lineas_memoria.append(f"- Nombre: {nombre}")
+    if cliente.dni:              lineas_memoria.append(f"- DNI: {cliente.dni}")
+    if cliente.obra_social:      lineas_memoria.append(f"- Obra social: {cliente.obra_social}")
+    if cliente.numero_afiliado:  lineas_memoria.append(f"- N° afiliado: {cliente.numero_afiliado}")
+    if cliente.fecha_nacimiento: lineas_memoria.append(f"- Fecha de nacimiento: {cliente.fecha_nacimiento}")
+    if cliente.mail:             lineas_memoria.append(f"- Mail: {cliente.mail}")
+
+    # Profesional habitual si ya está asignado
+    if cliente.profesional_id:
+        from models import Profesional
+        prof = db.query(Profesional).filter(Profesional.id == cliente.profesional_id).first()
+        if prof:
+            lineas_memoria.append(f"- Profesional habitual: {prof.nombre} ({prof.especialidad})")
+
+    if resumen: lineas_memoria.append(f"- Contexto previo: {resumen}")
+
+    if not lineas_memoria:
+        return SYSTEM_PROMPT_PRINCIPAL
+
+    bloque = (
+        "\n\n<MEMORIA_DEL_CLIENTE>\n"
+        + "\n".join(lineas_memoria)
+        + "\n</MEMORIA_DEL_CLIENTE>\n\n"
+        "REGLA: Usá esta memoria para no repetir preguntas. Sé natural, no parezcas un robot leyendo un formulario."
+    )
+    return SYSTEM_PROMPT_PRINCIPAL + bloque
+
+
+# ===================================================================
+# SECRETARIA PRINCIPAL — Función principal con loop de tools
 # ===================================================================
 async def secretaria_principal(user_text: str, to_number: str, msg_id: str = None):
-    """
-    La Secretaria Principal. Lee historial 6hs + datos_extraidos,
-    responde al cliente, y decide si escalar o agendar.
-    """
-
-    # 1. MARCAR COMO LEÍDO
     await marcar_leido_wpp(msg_id)
 
-    # 2. ABRIR DB Y CARGAR CLIENTE
     db = SessionLocal()
     try:
+        # ── Cargar / crear cliente ──────────────────────────────────
         cliente = db.query(Cliente).filter(Cliente.telefono == to_number).first()
-
         if not cliente:
-            # Auto-asignar a la empresa default
             from init_db import EMPRESA_DEFAULT_ID
             cliente = Cliente(
-                telefono=to_number, 
-                mensajes_enviados=0, 
+                telefono=to_number,
+                mensajes_enviados=0,
                 datos_extraidos={},
                 empresa_id=EMPRESA_DEFAULT_ID
             )
@@ -268,124 +302,190 @@ async def secretaria_principal(user_text: str, to_number: str, msg_id: str = Non
 
         cliente.mensajes_enviados += 1
         db.commit()
+        logging.warning(f"[PRINCIPAL] Mensaje de {to_number}: {user_text}")
 
-        print(f"\n[CLIENTE - {to_number}]: {user_text}")
+        # ── Historial últimas 6 horas (máx 40 mensajes) ────────────
+        hace_6h = datetime.utcnow() - timedelta(hours=6)
+        sesion  = (
+            db.query(Mensaje)
+            .filter(Mensaje.cliente_id == cliente.id, Mensaje.fecha_creacion >= hace_6h)
+            .order_by(Mensaje.fecha_creacion.desc())
+            .limit(40)
+            .all()
+        )
+        historial = [
+            {"role": "user" if m.rol == "usuario" else "assistant", "content": m.texto}
+            for m in reversed(sesion)
+        ]
+        historial.append({"role": "user", "content": user_text})
 
-        # 3. HISTORIAL DE SESIÓN (últimas 6 horas)
-        hace_6_horas = datetime.utcnow() - timedelta(hours=6)
-
-        mensajes_sesion = db.query(Mensaje).filter(
-            Mensaje.cliente_id == cliente.id,
-            Mensaje.fecha_creacion >= hace_6_horas
-        ).order_by(Mensaje.fecha_creacion.desc()).limit(40).all()
-
-        # Armamos el historial para Claude (orden cronológico)
-        historial_claude = []
-        for m in reversed(mensajes_sesion):
-            historial_claude.append({
-                "role": "user" if m.rol == "usuario" else "assistant",
-                "content": m.texto
-            })
-
-        # Agregar el mensaje nuevo al historial
-        historial_claude.append({"role": "user", "content": user_text})
-
-        # 4. GUARDAR MENSAJE DEL USUARIO EN SQL
-        nuevo_mensaje = Mensaje(cliente_id=cliente.id, rol="usuario", texto=user_text)
-        db.add(nuevo_mensaje)
+        db.add(Mensaje(cliente_id=cliente.id, rol="usuario", texto=user_text))
+        upsert_cola_analisis(db, cliente.id)
         db.commit()
 
-        # 5. UPSERT EN COLA DE ANÁLISIS
-        upsert_cola_analisis(db, cliente.id)
+        system_prompt = _build_system_prompt(cliente, db)
 
-        # 6. INYECTAR MEMORIA ANTI-AMNESIA (datos_extraidos → ~20 tokens)
-        datos = cliente.datos_extraidos or {}
-        nombre = datos.get("nombre_contacto", "")
-        rubro = datos.get("rubro_empresa", "")
-        necesidad = datos.get("necesidad_cliente", "")
-        resumen = datos.get("resumen_situacion", "")
+        # ── Loop de tools (máx 4 iteraciones) ──────────────────────
+        MAX_ITER  = 4
+        derivar   = None
 
-        bloque_memoria = ""
-        if nombre or rubro or necesidad or resumen:
-            bloque_memoria = f"""
+        for iteracion in range(MAX_ITER):
+            logging.warning(f"[PRINCIPAL] Iteración {iteracion + 1}/{MAX_ITER}")
 
-<MEMORIA_DEL_CLIENTE>
-{f'- Nombre: {nombre}' if nombre else ''}
-{f'- Rubro: {rubro}' if rubro else ''}
-{f'- Necesidad: {necesidad}' if necesidad else ''}
-{f'- Contexto previo: {resumen}' if resumen else ''}
-</MEMORIA_DEL_CLIENTE>
+            response = client_claude.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=700,
+                system=system_prompt,
+                tools=TOOLS_PRINCIPAL,
+                messages=historial
+            )
 
-REGLA: Usá esta memoria para no repetir preguntas. Sé natural, no parezcas un robot leyendo un formulario."""
+            texto_bloques = [b for b in response.content if b.type == "text"]
+            tool_bloques  = [b for b in response.content if b.type == "tool_use"]
 
-        system_prompt_final = SYSTEM_PROMPT_PRINCIPAL + bloque_memoria
+            # Respuesta final: texto sin tools → enviar y salir
+            if texto_bloques and not tool_bloques:
+                texto = " ".join(b.text.strip() for b in texto_bloques)
+                logging.warning(f"[PRINCIPAL] Respuesta final: {texto}")
+                await enviar_mensaje_wpp(to_number, texto)
+                db.add(Mensaje(cliente_id=cliente.id, rol="asistente", texto=texto))
+                db.commit()
+                break
 
-        # 7. LLAMAR A CLAUDE CON TOOLS
-        response = client_claude.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=300,
-            system=system_prompt_final,
-            tools=TOOLS_PRINCIPAL,
-            messages=historial_claude
-        )
+            # Texto previo junto con tools → enviar antes de procesar
+            if texto_bloques:
+                texto_previo = " ".join(b.text.strip() for b in texto_bloques)
+                await enviar_mensaje_wpp(to_number, texto_previo)
+                db.add(Mensaje(cliente_id=cliente.id, rol="asistente", texto=texto_previo))
+                db.commit()
 
-        # 8. PROCESAR RESPUESTA (puede ser texto, tool_use, o ambos)
-        texto_respuesta = ""
-        tools_ejecutadas = []
+            if not tool_bloques:
+                break
 
-        for block in response.content:
-            if block.type == "text":
-                texto_respuesta += block.text.strip()
-            elif block.type == "tool_use":
-                tools_ejecutadas.append({"name": block.name, "input": block.input})
+            historial.append({"role": "assistant", "content": response.content})
 
-        # 9. SI HAY TEXTO → Enviar al cliente y guardar
-        if texto_respuesta:
-            print(f"[SECRETARIA]: {texto_respuesta}\n")
-            await enviar_mensaje_wpp(to_number, texto_respuesta)
+            tool_results = []
+            for tool in tool_bloques:
+                resultado_str, derivar_tool = await _ejecutar_tool(db, cliente, to_number, tool)
+                logging.warning(f"[TOOL] {tool.name} → {resultado_str[:80]}")
+                tool_results.append({
+                    "type":        "tool_result",
+                    "tool_use_id": tool.id,
+                    "content":     resultado_str
+                })
+                if derivar_tool:
+                    derivar = derivar_tool
 
-            respuesta_ia = Mensaje(cliente_id=cliente.id, rol="asistente", texto=texto_respuesta)
-            db.add(respuesta_ia)
-            db.commit()
+            historial.append({"role": "user", "content": tool_results})
 
-        # 10. SI HAY TOOL → Ejecutar las acciones correspondientes
-        for tool_ejecutada in tools_ejecutadas:
-            await _ejecutar_tool_principal(db, cliente, to_number, tool_ejecutada)
+            # Tools terminales (cambian estado) → Claude da un mensaje de cierre y salimos
+            if derivar:
+                break
+
+        logging.warning(f"[PRINCIPAL] Loop terminado. derivar={derivar}")
 
     except Exception as e:
-        print(f"\n[❌ ERROR CRÍTICO PRINCIPAL]: {e}")
-        import traceback
-        traceback.print_exc()
-
+        logging.warning(f"[❌ PRINCIPAL ERROR]: {e}")
+        import traceback; traceback.print_exc()
     finally:
         db.close()
 
 
 # ===================================================================
-# HANDLER DE TOOLS DE LA PRINCIPAL
+# EJECUTOR DE TOOLS — devuelve (resultado_str, derivar_flag | None)
 # ===================================================================
-async def _ejecutar_tool_principal(db, cliente, to_number: str, tool: dict):
-    """Procesa las tool calls que hizo la Secretaria Principal."""
+async def _ejecutar_tool(db, cliente, to_number: str, tool) -> tuple[str, str | None]:
+    nombre = tool.name
+    inp    = tool.input
 
-    if tool["name"] == "registrar_paciente":
-        print(f"[📝 REGISTRO] Guardando paciente {to_number}")
-        cliente.nombre_completo = tool["input"].get("nombre_completo")
-        cliente.dni = tool["input"].get("dni")
-        cliente.obra_social = tool["input"].get("obra_social")
-        cliente.numero_afiliado = tool["input"].get("numero_afiliado")
-        cliente.fecha_nacimiento = tool["input"].get("fecha_nacimiento")
-        cliente.mail = tool["input"].get("mail")
+    # ── registrar_paciente ─────────────────────────────────────────
+    if nombre == "registrar_paciente":
+        logging.warning(f"[📝 REGISTRO] Guardando paciente {to_number}")
+        cliente.nombre_completo  = inp.get("nombre_completo")
+        cliente.dni              = inp.get("dni")
+        cliente.obra_social      = inp.get("obra_social")
+        cliente.numero_afiliado  = inp.get("numero_afiliado")
+        cliente.fecha_nacimiento = inp.get("fecha_nacimiento")
+        if inp.get("mail"):
+            cliente.mail = inp.get("mail")
         db.commit()
-        print(f"[📝 REGISTRO] Datos guardados: {cliente.nombre_completo}")
+        logging.warning(f"[📝 REGISTRO] Guardado: {cliente.nombre_completo}")
+        return (
+            f"Paciente registrado correctamente: {cliente.nombre_completo} | "
+            f"DNI: {cliente.dni} | Obra social: {cliente.obra_social}.",
+            None
+        )
 
-    elif tool["name"] == "iniciar_agendamiento":
-        especialidad = tool["input"].get("especialidad", "no especificada")
-        cobertura = tool["input"].get("cobertura", "no especificada")
-        print(f"[🗓️ AGENDAMIENTO] Iniciando para {to_number}. Especialidad: {especialidad}, Cobertura: {cobertura}")
+    # ── verificar_paciente_existente ───────────────────────────────
+    elif nombre == "verificar_paciente_existente":
+        dni_buscado = inp.get("dni", "").strip()
+        logging.warning(f"[🔍 VERIFICAR] Buscando DNI {dni_buscado} en BD")
+        encontrado = (
+            db.query(Cliente)
+            .filter(Cliente.dni == dni_buscado)
+            .first()
+        )
+
+        if not encontrado:
+            logging.warning(f"[🔍 VERIFICAR] DNI {dni_buscado} no encontrado.")
+            return (
+                f"No se encontró ningún paciente con DNI {dni_buscado}. "
+                "Pedile todos los datos para registrarlo como paciente nuevo.",
+                None
+            )
+
+        if encontrado.id == cliente.id:
+            # El mismo cliente desde el mismo teléfono
+            resumen = f"{cliente.nombre_completo or 'Sin nombre'} | Obra social: {cliente.obra_social or 'No registrada'}"
+            logging.warning(f"[🔍 VERIFICAR] Mismo cliente. Datos: {resumen}")
+            return f"Datos ya cargados: {resumen}.", None
+
+        # Copiar datos de otro registro al cliente actual
+        logging.warning(f"[🔍 VERIFICAR] Encontrado en otro teléfono. Copiando datos...")
+        cliente.nombre_completo  = encontrado.nombre_completo
+        cliente.dni              = encontrado.dni
+        cliente.obra_social      = encontrado.obra_social
+        cliente.numero_afiliado  = encontrado.numero_afiliado
+        cliente.fecha_nacimiento = encontrado.fecha_nacimiento
+        if encontrado.mail:
+            cliente.mail = encontrado.mail
+        if encontrado.profesional_id:
+            cliente.profesional_id = encontrado.profesional_id
+        db.commit()
+
+        prof_info = ""
+        if cliente.profesional_id:
+            from models import Profesional
+            prof = db.query(Profesional).filter(Profesional.id == cliente.profesional_id).first()
+            if prof:
+                prof_info = f" | Profesional habitual: {prof.nombre}"
+
+        resumen = (
+            f"Paciente encontrado: {cliente.nombre_completo} | "
+            f"Obra social: {cliente.obra_social or 'No registrada'}{prof_info}. "
+            "Datos cargados correctamente."
+        )
+        logging.warning(f"[🔍 VERIFICAR] {resumen}")
+        return resumen, None
+
+    # ── iniciar_agendamiento ───────────────────────────────────────
+    elif nombre == "iniciar_agendamiento":
+        especialidad = inp.get("especialidad", "no especificada")
+        cobertura    = inp.get("cobertura",    "no especificada")
+        profesional  = inp.get("profesional",  "")
+        logging.warning(f"[🗓️ AGENDAMIENTO] {to_number} | {especialidad} | {cobertura} | {profesional}")
+
+        # Guardar profesional en el cliente si llegó por parámetro
+        if profesional:
+            from services.profesionales import get_profesional_by_nombre
+            prof_obj = get_profesional_by_nombre(db, profesional)
+            if prof_obj and not cliente.profesional_id:
+                cliente.profesional_id = prof_obj.id
+                db.commit()
+                logging.warning(f"[🗓️ AGENDAMIENTO] Profesional asignado: {prof_obj.nombre}")
 
         cliente.estado_agente = "agendadora"
         db.commit()
-        print(f"[🔄 SWITCH] Cliente {to_number} → 'agendadora'")
 
         await enviar_mensaje_wpp(to_number, "Dale, dejame revisar la agenda para coordinar día y hora. Un segundo...")
 
@@ -397,30 +497,34 @@ async def _ejecutar_tool_principal(db, cliente, to_number: str, tool: dict):
                 None
             )
         except Exception as e:
-            print(f"[❌ ERROR al iniciar agendadora] {e}")
+            logging.warning(f"[❌ AGENDAMIENTO ERROR]: {e}")
 
-    elif tool["name"] == "iniciar_cobranzas":
-        print(f"[💸 COBRANZAS] Derivando a cobranzas: {to_number}")
+        return f"Derivado a agendadora. Especialidad: {especialidad}, Cobertura: {cobertura}.", "agendadora"
+
+    # ── iniciar_cobranzas ──────────────────────────────────────────
+    elif nombre == "iniciar_cobranzas":
+        logging.warning(f"[💸 COBRANZAS] Derivando {to_number}")
         from services.cobranza import iniciar_cobranzas as iniciar_cobranzas_svc
-        especialidad_cobro = tool["input"].get("especialidad")
-        cobertura_cobro    = tool["input"].get("cobertura")
         next_state = await iniciar_cobranzas_svc(
             to_number,
-            especialidad=especialidad_cobro,
-            cobertura=cobertura_cobro,
+            especialidad=inp.get("especialidad"),
+            cobertura=inp.get("cobertura"),
         )
         cliente.estado_agente = next_state
         db.commit()
+        return "Derivado a cobranzas. Instrucciones de pago enviadas.", "cobranzas"
 
-    elif tool["name"] == "notificar_walter_urgente":
-        es_emergencia = tool["input"].get("es_emergencia", False)
-        print(f"[🚨 ESCALAMIENTO] Cliente {to_number} escalado. Emergencia: {es_emergencia}")
-
-        cliente.estado_agente = "manual"
-        db.commit()
-        print(f"[🔄 SWITCH] Cliente {to_number} → estado_agente = 'manual'")
-
-        datos = cliente.datos_extraidos or {}
+    # ── notificar_walter_urgente ───────────────────────────────────
+    elif nombre == "notificar_walter_urgente":
+        es_emergencia = inp.get("es_emergencia", False)
+        logging.warning(f"[🚨 WALTER] Escalamiento {to_number} | emergencia={es_emergencia}")
+        datos          = cliente.datos_extraidos or {}
         nombre_cliente = cliente.nombre_completo or datos.get("nombre_contacto", "un paciente")
-        
         await enviar_notificacion_a_walter(to_number, nombre_cliente)
+        # No cambia estado — Abby sigue respondiendo
+        return f"Walter notificado. Emergencia: {es_emergencia}.", None
+
+    # ── tool desconocida ───────────────────────────────────────────
+    else:
+        logging.warning(f"[⚠️ TOOL DESCONOCIDA]: {nombre}")
+        return f"Tool '{nombre}' no reconocida.", None
