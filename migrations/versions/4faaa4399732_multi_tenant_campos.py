@@ -19,31 +19,55 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Nuevos campos multi-tenant en Empresa
-    op.add_column('empresas', sa.Column('bot_activo',           sa.Boolean(), nullable=True))
-    op.add_column('empresas', sa.Column('numero_walter',        sa.String(),  nullable=True))
-    op.add_column('empresas', sa.Column('tools_habilitadas',    sa.JSON(),    nullable=True))
-    op.add_column('empresas', sa.Column('phone_number_id',      sa.String(),  nullable=True))
-    op.add_column('empresas', sa.Column('webhook_verify_token', sa.String(),  nullable=True))
-    op.add_column('empresas', sa.Column('calendar_id',          sa.String(),  nullable=True))
-    op.create_unique_constraint('uq_empresas_phone_number_id', 'empresas', ['phone_number_id'])
+    # Usar ADD COLUMN IF NOT EXISTS para que sea idempotente.
+    # Necesario porque create_all() ya pudo haber creado algunas de estas columnas
+    # en el primer deploy antes de que existiera esta migración.
+    op.execute("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS bot_activo           BOOLEAN")
+    op.execute("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS numero_walter        VARCHAR")
+    op.execute("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS tools_habilitadas    JSON")
+    op.execute("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS phone_number_id      VARCHAR")
+    op.execute("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS webhook_verify_token VARCHAR")
+    op.execute("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS calendar_id          VARCHAR")
 
-    # bot_activo en Cliente
-    op.add_column('clientes', sa.Column('bot_activo', sa.Boolean(), nullable=True))
+    # Crear el unique constraint solo si no existe ya
+    op.execute("""
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'uq_empresas_phone_number_id'
+            ) THEN
+                ALTER TABLE empresas
+                ADD CONSTRAINT uq_empresas_phone_number_id UNIQUE (phone_number_id);
+            END IF;
+        END $$;
+    """)
 
-    # empresa_id en Mensaje
-    op.add_column('mensajes', sa.Column('empresa_id', sa.String(), nullable=True))
-    op.create_foreign_key('fk_mensajes_empresa_id', 'mensajes', 'empresas', ['empresa_id'], ['id'])
+    op.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS bot_activo  BOOLEAN")
+    op.execute("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS empresa_id  VARCHAR")
+
+    # FK en mensajes → empresas, solo si no existe
+    op.execute("""
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'fk_mensajes_empresa_id'
+            ) THEN
+                ALTER TABLE mensajes
+                ADD CONSTRAINT fk_mensajes_empresa_id
+                FOREIGN KEY (empresa_id) REFERENCES empresas(id);
+            END IF;
+        END $$;
+    """)
 
 
 def downgrade() -> None:
-    op.drop_constraint('fk_mensajes_empresa_id', 'mensajes', type_='foreignkey')
-    op.drop_column('mensajes', 'empresa_id')
-    op.drop_column('clientes', 'bot_activo')
-    op.drop_constraint('uq_empresas_phone_number_id', 'empresas', type_='unique')
-    op.drop_column('empresas', 'calendar_id')
-    op.drop_column('empresas', 'webhook_verify_token')
-    op.drop_column('empresas', 'phone_number_id')
-    op.drop_column('empresas', 'tools_habilitadas')
-    op.drop_column('empresas', 'numero_walter')
-    op.drop_column('empresas', 'bot_activo')
+    op.execute("ALTER TABLE mensajes DROP CONSTRAINT IF EXISTS fk_mensajes_empresa_id")
+    op.execute("ALTER TABLE mensajes  DROP COLUMN IF EXISTS empresa_id")
+    op.execute("ALTER TABLE clientes  DROP COLUMN IF EXISTS bot_activo")
+    op.execute("ALTER TABLE empresas  DROP CONSTRAINT IF EXISTS uq_empresas_phone_number_id")
+    op.execute("ALTER TABLE empresas  DROP COLUMN IF EXISTS calendar_id")
+    op.execute("ALTER TABLE empresas  DROP COLUMN IF EXISTS webhook_verify_token")
+    op.execute("ALTER TABLE empresas  DROP COLUMN IF EXISTS phone_number_id")
+    op.execute("ALTER TABLE empresas  DROP COLUMN IF EXISTS tools_habilitadas")
+    op.execute("ALTER TABLE empresas  DROP COLUMN IF EXISTS numero_walter")
+    op.execute("ALTER TABLE empresas  DROP COLUMN IF EXISTS bot_activo")
