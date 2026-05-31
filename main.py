@@ -46,6 +46,18 @@ def _aplicar_columnas_faltantes():
             """))
             print("[DB] Columnas de empresas OK.")
 
+        if "profesional_id" not in cols_cli:
+            print("[DB] Agregando profesional_id a clientes...")
+            conn.execute(text("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS profesional_id VARCHAR"))
+            conn.execute(text("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_clientes_profesional_id')
+                    THEN ALTER TABLE clientes ADD CONSTRAINT fk_clientes_profesional_id
+                         FOREIGN KEY (profesional_id) REFERENCES profesionales(id);
+                    END IF;
+                END $$;
+            """))
+
         if "bot_activo" not in cols_cli:
             print("[DB] Agregando bot_activo a clientes...")
             conn.execute(text("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS bot_activo BOOLEAN"))
