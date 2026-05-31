@@ -7,32 +7,39 @@ import logging
 from models import Profesional
 
 
-def get_profesionales_activos(db) -> list[Profesional]:
-    return db.query(Profesional).filter(Profesional.activo == True).all()
+def get_profesionales_activos(db, empresa_id: str = None) -> list[Profesional]:
+    q = db.query(Profesional).filter(Profesional.activo == True)
+    if empresa_id:
+        q = q.filter(Profesional.empresa_id == empresa_id)
+    return q.all()
 
 
 def get_profesional_by_id(db, profesional_id: str) -> Profesional | None:
     return db.query(Profesional).filter(Profesional.id == profesional_id).first()
 
 
-def get_profesional_by_nombre(db, nombre: str) -> Profesional | None:
+def get_profesional_by_nombre(db, nombre: str, empresa_id: str = None) -> Profesional | None:
     """Búsqueda case-insensitive por nombre parcial. Ej: 'renals' matchea 'Lic. Renals'."""
     nombre_lower = nombre.strip().lower()
-    todos = db.query(Profesional).filter(Profesional.activo == True).all()
-    for p in todos:
+    q = db.query(Profesional).filter(Profesional.activo == True)
+    if empresa_id:
+        q = q.filter(Profesional.empresa_id == empresa_id)
+    for p in q.all():
         if nombre_lower in p.nombre.lower():
             return p
     return None
 
 
-def get_profesional_by_especialidad(db, especialidad: str) -> Profesional | None:
+def get_profesional_by_especialidad(db, especialidad: str, empresa_id: str = None) -> Profesional | None:
     """Devuelve el primer profesional activo de la especialidad indicada."""
     esp = _normalizar_especialidad(especialidad)
-    return (
+    q = (
         db.query(Profesional)
         .filter(Profesional.especialidad == esp, Profesional.activo == True)
-        .first()
     )
+    if empresa_id:
+        q = q.filter(Profesional.empresa_id == empresa_id)
+    return q.first()
 
 
 def get_calendar_id(profesional: Profesional | None) -> str:

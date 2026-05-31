@@ -16,25 +16,28 @@ import models  # noqa: F401 — necesario para que Base.metadata conozca las tab
 Base.metadata.create_all(bind=engine)
 
 # Asegurarse de que exista la empresa por defecto
-from init_db import seed_empresa_default, seed_profesionales
+from init_db import seed_empresa_default, seed_profesionales, seed_abriness_multitenant
 seed_empresa_default()
 seed_profesionales()
+seed_abriness_multitenant()
 
 # Importamos las rutas
 from routes import whatsapp
+from routes import admin
 
 # Inicializamos FastAPI
 app = FastAPI(title="SecretarIA Backend")
 
-# Enchufamos las rutas de WhatsApp
+# Enchufamos las rutas
 app.include_router(whatsapp.router)
+app.include_router(admin.router)
 
 
 # ===================================================================
 # JOBS PROGRAMADOS — APScheduler
 # ===================================================================
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from services.analista_nocturno import job_analista_nocturno
+from agents.analista_nocturno import job_analista_nocturno
 from services.seguimiento import job_seguimiento
 
 scheduler = AsyncIOScheduler()

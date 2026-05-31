@@ -26,7 +26,7 @@ async def job_seguimiento():
         
         print(f"[📬 SEGUIMIENTO] {len(pendientes)} mensajes a enviar.")
         
-        from services.secretaria_principal import enviar_mensaje_wpp
+        from agents.herramientas_secretarias import enviar_mensaje_wpp
         
         for seg in pendientes:
             try:

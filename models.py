@@ -21,6 +21,14 @@ class Empresa(Base):
     usa_calendar      = Column(Boolean, default=False)
     usa_seguimiento   = Column(Boolean, default=True)
 
+    # Multi-tenant / control
+    bot_activo           = Column(Boolean, default=True)
+    numero_walter        = Column(String,  nullable=True)        # Número WA del admin (notificaciones y /mute)
+    tools_habilitadas    = Column(JSON,    nullable=True)        # None = todas; lista = solo esas
+    phone_number_id      = Column(String,  unique=True, nullable=True)  # Meta PHONE_NUMBER_ID del bot
+    webhook_verify_token = Column(String,  nullable=True)        # token de verificación por empresa (futuro)
+    calendar_id          = Column(String,  nullable=True)        # Google Calendar ID (fallback: env CALENDAR_ID)
+
     clientes      = relationship("Cliente",      back_populates="empresa")
     profesionales = relationship("Profesional",  back_populates="empresa")
 
@@ -49,7 +57,8 @@ class Cliente(Base):
     empresa_id    = Column(String, ForeignKey("empresas.id"))
     profesional_id = Column(String, ForeignKey("profesionales.id"), nullable=True)
     telefono      = Column(String, index=True, nullable=False)
-    es_confianza  = Column(Boolean, default=False)
+    es_confianza      = Column(Boolean, default=False)
+    bot_activo        = Column(Boolean, default=True)    # False = bot ignora mensajes de este cliente
     mensajes_enviados = Column(Integer, default=0)
 
     # EL ENRUTADOR: 'principal', 'agendadora', 'esperando_mail', 'manual' (desenchufado, solo manual desde BD)
@@ -79,6 +88,7 @@ class Mensaje(Base):
 
     id            = Column(Integer, primary_key=True, index=True)
     cliente_id    = Column(String, ForeignKey("clientes.id"))
+    empresa_id    = Column(String, ForeignKey("empresas.id"), nullable=True)
     rol           = Column(String, nullable=False)
     texto         = Column(String, nullable=False)
     fecha_creacion = Column(DateTime, default=datetime.datetime.utcnow)

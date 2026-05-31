@@ -8,7 +8,8 @@
 # ===================================================================
 from database import SessionLocal
 from models import Cliente, Mensaje
-from services.secretaria_principal import enviar_mensaje_wpp, marcar_leido_wpp, client_claude
+from agents.herramientas_secretarias import enviar_mensaje_wpp, marcar_leido_wpp, client_claude
+from tools.registry import get_tools_for_agendadora
 import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -53,59 +54,6 @@ Si detectás crisis o urgencia emocional:
 3. Llamá notificar_walter_urgente con es_emergencia: true.
 </EMERGENCIA>"""
 
-# ===================================================================
-# TOOLS
-# ===================================================================
-TOOLS_AGENDADORA = [
-    {
-        "name": "consultar_calendar",
-        "description": "Consulta la disponibilidad real en Google Calendar. Siempre usala antes de proponer horarios.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "texto_fecha": {
-                    "type": "string",
-                    "description": "Fecha en lenguaje natural, por ejemplo 'mañana', 'el lunes', '16 de mayo', 'pasado mañana a las 10'."
-                },
-                "dias_a_consultar": {
-                    "type": "integer",
-                    "description": "Cuántos días consultar desde la fecha indicada (default: 1 si se da fecha concreta, 3 si es abierto)."
-                }
-            },
-            "required": ["texto_fecha"]
-        }
-    },
-    {
-        "name": "iniciar_cobranzas",
-        "description": "Deriva a cobranzas cuando el paciente acepta pagar. Pasás los datos del turno elegido.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "dia":          {"type": "string", "description": "Día del turno (ej. miércoles 16)"},
-                "hora":         {"type": "string", "description": "Hora del turno (ej. 15hs)"},
-                "profesional":  {"type": "string", "description": "Profesional elegido"},
-                "iso_datetime": {"type": "string", "description": "Datetime ISO del slot, tal como aparece entre [ISO:...] en la respuesta del calendario. Usalo siempre que esté disponible para evitar errores de interpretación."}
-            },
-            "required": ["dia", "hora", "profesional"]
-        }
-    },
-    {
-        "name": "volver_secretaria_principal",
-        "description": "Devuelve al paciente a la secretaria principal si el tema se desvía del agendamiento.",
-        "input_schema": {"type": "object", "properties": {}}
-    },
-    {
-        "name": "notificar_walter_urgente",
-        "description": "Notifica a Walter ante emergencias o cuando el paciente se niega a pagar anticipadamente.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "es_emergencia": {"type": "boolean", "description": "True si es crisis psiquiátrica o emocional."}
-            },
-            "required": ["es_emergencia"]
-        }
-    }
-]
 
 # ===================================================================
 # GOOGLE CALENDAR — Service Account (no necesita OAuth interactivo)
@@ -222,12 +170,13 @@ def _parse_fecha_hora(texto: str) -> tuple[datetime, datetime] | tuple[None, Non
     return start, start + timedelta(hours=1)
 
 
-def _consultar_calendar(texto_fecha: str, dias: int = 3) -> str:
+def _consultar_calendar(texto_fecha: str, dias: int = 3, calendar_id: str = None) -> str:
     """Devuelve texto con los horarios disponibles para mostrarle a Claude."""
+    if not calendar_id:
+        calendar_id = os.getenv("CALENDAR_ID", "primary")
     try:
         start, _ = _parse_fecha_hora(texto_fecha)
         if start is None:
-            # Si no se pudo parsear, consultamos los próximos 3 días desde hoy
             fecha_inicio = datetime.now(TIMEZONE).replace(hour=0, minute=0, second=0, microsecond=0)
         else:
             fecha_inicio = start.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -235,8 +184,6 @@ def _consultar_calendar(texto_fecha: str, dias: int = 3) -> str:
         service  = _build_calendar_service()
         time_min = fecha_inicio
         time_max = fecha_inicio + timedelta(days=dias)
-        
-        calendar_id = os.getenv("CALENDAR_ID", "primary")
 
         busy_raw = service.freebusy().query(body={
             'timeMin':  time_min.isoformat(),
@@ -282,8 +229,9 @@ def _consultar_calendar(texto_fecha: str, dias: int = 3) -> str:
         return "Hubo un problema consultando la agenda. ¿Podés intentar con otra fecha?"
 
 
-def _is_busy(service, start: datetime, end: datetime) -> bool:
-    calendar_id = os.getenv("CALENDAR_ID", "primary")
+def _is_busy(service, start: datetime, end: datetime, calendar_id: str = None) -> bool:
+    if not calendar_id:
+        calendar_id = os.getenv("CALENDAR_ID", "primary")
     busy = service.freebusy().query(body={
         'timeMin':  start.isoformat(),
         'timeMax':  end.isoformat(),
@@ -293,56 +241,64 @@ def _is_busy(service, start: datetime, end: datetime) -> bool:
     return len(busy) > 0
 
 
-def _crear_evento(service, titulo: str, start: datetime, end: datetime, descripcion: str = '') -> str:
-    logging.warning(f"📅 [CALENDAR INFO] Intentando crear evento: '{titulo}' desde {start} hasta {end}")
-    event  = {
+def _crear_evento(service, titulo: str, start: datetime, end: datetime, descripcion: str = '', calendar_id: str = None) -> str:
+    if not calendar_id:
+        calendar_id = os.getenv("CALENDAR_ID", "primary")
+    logging.warning(f"[CALENDAR] Creando evento '{titulo}' | cal={calendar_id} | {start}")
+    event = {
         'summary':     titulo,
         'description': descripcion,
         'start': {'dateTime': start.isoformat(), 'timeZone': str(TIMEZONE)},
         'end':   {'dateTime': end.isoformat(),   'timeZone': str(TIMEZONE)}
     }
     try:
-        calendar_id = os.getenv("CALENDAR_ID", "primary")
-        logging.warning(f"📅 [CALENDAR INFO] Usando calendarId: {calendar_id}")
         creado = service.events().insert(calendarId=calendar_id, body=event).execute()
         enlace = creado.get('htmlLink', '')
-        logging.warning(f"✅ [CALENDAR SUCCESS] Evento creado con éxito: {enlace}")
+        logging.warning(f"[CALENDAR] Evento creado: {enlace}")
         return enlace
     except Exception as e:
-        logging.warning(f"❌ [CALENDAR ERROR]: Falló la creación del evento en Google Calendar: {e}")
+        logging.warning(f"[CALENDAR ERROR] Fallo al crear evento: {e}")
         raise
 
 
 # ===================================================================
 # FUNCIÓN PRINCIPAL
 # ===================================================================
-async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = None):
-    """
-    Loop correcto: Claude llama tool → ejecutamos → devolvemos tool_result a Claude
-    → Claude formula la respuesta final para el usuario.
-    """
-    import logging
-    logging.warning(f"🚀🚀🚀 [AGENDADORA EJECUTADA] Recibimos mensaje de {to_number}: '{user_text}' 🚀🚀🚀")
-    logging.warning(f"🚀 [INIT AGENDADORA] Entrando a la función para el número {to_number}")
-    logging.warning(f"💬 [INIT AGENDADORA] Mensaje recibido: {user_text}")
-    
+async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = None, empresa_id: str = None):
+    """Loop: Claude llama tool → ejecutamos → devolvemos tool_result → Claude responde."""
     try:
         await marcar_leido_wpp(msg_id)
-        logging.warning(f"✅ [INIT AGENDADORA] Mensaje marcado como leído.")
     except Exception as e:
-        logging.warning(f"⚠️ [INIT AGENDADORA] Falló marcar_leido_wpp: {e}")
+        logging.warning(f"[AGENDADORA] Fallo marcar_leido_wpp: {e}")
 
     db = SessionLocal()
     try:
-        logging.warning(f"🔍 [INIT AGENDADORA] Buscando cliente en DB...")
-        cliente = db.query(Cliente).filter(Cliente.telefono == to_number).first()
-        if not cliente:
-            logging.warning(f"[⚠️ AGENDADORA] Cliente {to_number} no encontrado. Creándolo automáticamente...")
+        # ── Cargar empresa ──────────────────────────────────────────
+        from models import Empresa
+        empresa = None
+        if empresa_id:
+            empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
+        if not empresa:
             from init_db import EMPRESA_DEFAULT_ID
-            cliente = Cliente(telefono=to_number, empresa_id=EMPRESA_DEFAULT_ID, estado_agente="agendadora")
+            empresa_id = EMPRESA_DEFAULT_ID
+            empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
+
+        calendar_id = (empresa.calendar_id if empresa and empresa.calendar_id
+                       else os.getenv("CALENDAR_ID", "primary"))
+
+        # ── Cargar / crear cliente ──────────────────────────────────
+        cliente = db.query(Cliente).filter(
+            Cliente.telefono == to_number,
+            Cliente.empresa_id == empresa_id
+        ).first()
+        if not cliente:
+            logging.warning(f"[AGENDADORA] Cliente {to_number} no encontrado. Creando...")
+            cliente = Cliente(telefono=to_number, empresa_id=empresa_id, estado_agente="agendadora")
             db.add(cliente)
             db.commit()
             db.refresh(cliente)
+
+        logging.warning(f"[AGENDADORA] {to_number} | empresa={empresa_id} | cal={calendar_id}")
 
         cliente.mensajes_enviados += 1
         logging.warning(f"\n[AGENDADORA - {to_number}]: {user_text}")
@@ -365,10 +321,12 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
             })
         historial.append({"role": "user", "content": user_text})
 
-        db.add(Mensaje(cliente_id=cliente.id, rol="usuario", texto=user_text))
+        db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="usuario", texto=user_text))
 
-        nombre       = (cliente.datos_extraidos or {}).get("nombre_contacto", "")
+        nombre       = cliente.nombre_completo or (cliente.datos_extraidos or {}).get("nombre_contacto", "")
         system_final = SYSTEM_PROMPT_AGENDADORA + (f"\nEl cliente se llama {nombre}." if nombre else "")
+
+        definitions, handlers = get_tools_for_agendadora(empresa)
 
         # ---------------------------------------------------------------
         # Loop de herramientas: Claude puede llamar varias tools seguidas
@@ -379,7 +337,7 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
                 model="claude-haiku-4-5",
                 max_tokens=400,
                 system=system_final,
-                tools=TOOLS_AGENDADORA,
+                tools=definitions,
                 messages=historial
             )
 
@@ -387,130 +345,55 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
             texto_bloques = [b for b in response.content if b.type == "text"]
             tool_bloques  = [b for b in response.content if b.type == "tool_use"]
 
-            # Si Claude respondió con texto Y sin tools → respuesta final
             if texto_bloques and not tool_bloques:
                 texto_respuesta = " ".join(b.text.strip() for b in texto_bloques)
-                logging.warning(f"[AGENDADORA]: {texto_respuesta}")
+                logging.warning(f"[AGENDADORA] Respuesta final: {texto_respuesta}")
                 await enviar_mensaje_wpp(to_number, texto_respuesta)
-                db.add(Mensaje(cliente_id=cliente.id, rol="asistente", texto=texto_respuesta))
+                db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", texto=texto_respuesta))
                 break
 
-            # Si hay texto junto con tools, enviarlo antes de procesar
             if texto_bloques:
                 texto_previo = " ".join(b.text.strip() for b in texto_bloques)
                 await enviar_mensaje_wpp(to_number, texto_previo)
-                db.add(Mensaje(cliente_id=cliente.id, rol="asistente", texto=texto_previo))
+                db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", texto=texto_previo))
 
             if not tool_bloques:
-                # Claude paró sin texto ni tools (stop_reason != tool_use)
                 break
 
-            # Agregar la respuesta de Claude al historial (con los tool_use)
             historial.append({"role": "assistant", "content": response.content})
 
-            # Ejecutar cada tool y construir los tool_result
             tool_results = []
-            derivar      = None  # para manejar derivaciones después del loop
+            derivar      = None
 
             for tool in tool_bloques:
-                tool_name  = tool.name
-                tool_input = tool.input
-                logging.warning(f"[🔧 TOOL]: {tool_name} | input: {tool_input}")
+                logging.warning(f"[TOOL] {tool.name} | input: {tool.input}")
+                handler_fn = handlers.get(tool.name)
+                if handler_fn:
+                    try:
+                        resultado, derivar_tool = await handler_fn(tool.input, cliente, db, empresa)
+                    except Exception as e:
+                        logging.warning(f"[ERROR TOOL {tool.name}]: {e}")
+                        import traceback; traceback.print_exc()
+                        resultado    = "Error al ejecutar la herramienta."
+                        derivar_tool = None
+                else:
+                    logging.warning(f"[TOOL DESCONOCIDA]: {tool.name}")
+                    resultado    = f"Tool '{tool.name}' no reconocida."
+                    derivar_tool = None
 
-                try:
-                    if tool_name == "consultar_calendar":
-                        await enviar_mensaje_wpp(to_number, "Reviso la agenda... un momento.")
-                        resultado = _consultar_calendar(
-                            texto_fecha     = tool_input.get("texto_fecha", "hoy"),
-                            dias            = tool_input.get("dias_a_consultar", 3)
-                        )
-                        tool_results.append({
-                            "type":        "tool_result",
-                            "tool_use_id": tool.id,
-                            "content":     resultado
-                        })
+                logging.warning(f"[TOOL] {tool.name} → {resultado[:80]}")
+                tool_results.append({
+                    "type":        "tool_result",
+                    "tool_use_id": tool.id,
+                    "content":     resultado
+                })
+                if derivar_tool:
+                    derivar = derivar_tool
 
-                    elif tool_name == "iniciar_cobranzas":
-                        dia         = tool_input.get("dia", "")
-                        hora        = tool_input.get("hora", "")
-                        profesional = tool_input.get("profesional", "")
-                        iso_dt      = tool_input.get("iso_datetime", "")
-
-                        # Prioridad: usar el ISO exacto devuelto por consultar_calendar
-                        if iso_dt:
-                            try:
-                                start = datetime.fromisoformat(iso_dt).astimezone(TIMEZONE)
-                            except ValueError:
-                                start = None
-                        else:
-                            start, _ = _parse_fecha_hora(f"{dia} {hora}")
-
-                        end = (start + timedelta(hours=1)) if start else None
-
-                        if not start or not end:
-                            resultado = f"No pude interpretar la fecha '{dia} {hora}'. ¿Podés confirmar día y hora exactos?"
-                        else:
-                            service = _build_calendar_service()
-                            if _is_busy(service, start, end):
-                                resultado = "Ese horario ya está ocupado. Voy a buscar otra alternativa."
-                            else:
-                                descripcion = f"Turno Abriness con {profesional}. Paciente: {cliente.nombre_completo or to_number}."
-                                enlace      = _crear_evento(service, f"Turno Abriness - {profesional}", start, end, descripcion)
-                                resultado   = f"Turno reservado el {start.strftime('%A %d/%m a las %H:%M')} con {profesional}."
-                                if enlace:
-                                    resultado += f" Link: {enlace}"
-                                derivar = "cobranzas"
-
-                        tool_results.append({
-                            "type":        "tool_result",
-                            "tool_use_id": tool.id,
-                            "content":     resultado
-                        })
-
-                    elif tool_name == "volver_secretaria_principal":
-                        tool_results.append({
-                            "type":        "tool_result",
-                            "tool_use_id": tool.id,
-                            "content":     "Derivando al paciente a la secretaria principal."
-                        })
-                        derivar = "principal"
-
-                    elif tool_name == "notificar_walter_urgente":
-                        es_emergencia = tool_input.get("es_emergencia", False)
-                        from services.secretaria_principal import enviar_notificacion_a_walter
-                        nombre_cliente = cliente.nombre_completo or nombre or to_number
-                        await enviar_notificacion_a_walter(to_number, nombre_cliente)
-                        tool_results.append({
-                            "type":        "tool_result",
-                            "tool_use_id": tool.id,
-                            "content":     f"Walter notificado. Emergencia: {es_emergencia}."
-                        })
-                        derivar = "principal"
-
-                except Exception as e:
-                    logging.warning(f"[❌ ERROR EN TOOL {tool_name}]: {e}")
-                    import traceback; traceback.print_exc()
-                    tool_results.append({
-                        "type":        "tool_result",
-                        "tool_use_id": tool.id,
-                        "content":     "Error al ejecutar la herramienta."
-                    })
-
-            # Agregar los resultados de las tools al historial para la próxima iteración
             historial.append({"role": "user", "content": tool_results})
 
-            # Si hubo derivación, actualizar estado y salir del loop
             if derivar:
-                if derivar == "cobranzas":
-                    from services.cobranza import iniciar_cobranzas as iniciar_cobranzas_svc
-                    next_state = await iniciar_cobranzas_svc(
-                        to_number,
-                        especialidad=profesional,
-                        detalle_turno=resultado,
-                    )
-                    cliente.estado_agente = next_state
-                elif derivar == "principal":
-                    cliente.estado_agente = "principal"
+                cliente.estado_agente = derivar
                 db.commit()
                 break
 

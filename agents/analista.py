@@ -7,11 +7,7 @@ import logging
 from database import SessionLocal
 from models import Cliente, Mensaje
 from datetime import datetime, timedelta
-import os
-import anthropic
-
-CLAUDE_KEY   = os.getenv("CLAUDE_API_KEY")
-client_claude = anthropic.Anthropic(api_key=CLAUDE_KEY) if CLAUDE_KEY else None
+from agents.herramientas_secretarias import client_claude
 
 
 async def secretaria_resumen(db, cliente) -> str:

@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SecretarIA — Admin</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; color: #333; min-height: 100vh; }
+
+    /* ── Header ── */
+    #header {
+      background: #1a1a2e; color: #fff;
+      padding: 12px 24px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    }
+    #header h1 { font-size: 1rem; font-weight: 700; white-space: nowrap; }
+    #token-input {
+      flex: 1; min-width: 180px; max-width: 360px;
+      padding: 7px 11px; border: none; border-radius: 5px;
+      font-size: 0.85rem; background: #2d2d44; color: #fff;
+    }
+    #token-input::placeholder { color: #888; }
+    #btn-connect {
+      padding: 7px 18px; background: #e94560; border: none; color: #fff;
+      border-radius: 5px; cursor: pointer; font-size: 0.85rem; font-weight: 600;
+    }
+    #btn-connect:hover { background: #c73a52; }
+    #status { font-size: 0.78rem; }
+    #status.ok  { color: #4caf50; }
+    #status.err { color: #f44336; }
+
+    /* ── Main layout ── */
+    #main { display: none; padding: 20px 24px; }
+    #controls { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
+    select {
+      padding: 7px 11px; border: 1px solid #ccc; border-radius: 5px;
+      font-size: 0.85rem; min-width: 220px; background: #fff;
+    }
+    .btn {
+      padding: 7px 14px; border: 1px solid #ccc; border-radius: 5px;
+      cursor: pointer; font-size: 0.83rem; background: #fff;
+    }
+    .btn:hover { background: #f0f0f0; }
+    .btn-primary { background: #1a1a2e; color: #fff; border-color: #1a1a2e; }
+    .btn-primary:hover { background: #0f3460; border-color: #0f3460; }
+    .btn-sm { font-size: 0.75rem; padding: 4px 10px; }
+    .btn-mute   { background: #fff3cd; border-color: #ffc107; color: #664d03; }
+    .btn-mute:hover { background: #ffe69c; }
+    .btn-unmute { background: #d1e7dd; border-color: #0f5132; color: #0f5132; }
+    .btn-unmute:hover { background: #badbcc; }
+
+    /* ── Content split ── */
+    #content-area { display: flex; gap: 20px; align-items: flex-start; }
+    #table-section { flex: 1; min-width: 0; }
+
+    /* ── Table ── */
+    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; border: 1px solid #ddd; overflow: hidden; }
+    thead th {
+      background: #1a1a2e; color: #fff; padding: 10px 12px;
+      text-align: left; font-size: 0.82rem; font-weight: 600; white-space: nowrap;
+    }
+    tbody td { padding: 9px 12px; border-bottom: 1px solid #f0f0f0; font-size: 0.83rem; vertical-align: middle; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: #f8f9fb; }
+    tbody tr.selected { background: #eef2ff; }
+
+    .badge {
+      display: inline-block; padding: 2px 9px; border-radius: 20px;
+      font-size: 0.72rem; font-weight: 700; white-space: nowrap;
+    }
+    .badge-principal      { background: #cfe2ff; color: #0d47a1; }
+    .badge-agendadora     { background: #d1e7dd; color: #0a3622; }
+    .badge-manual         { background: #f8d7da; color: #842029; }
+    .badge-esperando_mail { background: #fff3cd; color: #664d03; }
+    .badge-default        { background: #e2e3e5; color: #41464b; }
+
+    td.bot-icon { text-align: center; font-size: 1.1rem; }
+    td.actions  { white-space: nowrap; }
+    td.actions > * + * { margin-left: 6px; }
+
+    #placeholder { text-align: center; padding: 48px; color: #aaa; font-size: 0.9rem; }
+
+    /* ── Conversation panel ── */
+    #conv-panel {
+      width: 400px; flex-shrink: 0; background: #fff;
+      border: 1px solid #ddd; border-radius: 8px; overflow: hidden;
+      display: none; position: sticky; top: 20px; max-height: calc(100vh - 100px);
+      display: none; flex-direction: column;
+    }
+    #conv-header {
+      background: #1a1a2e; color: #fff; padding: 11px 14px;
+      display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+    }
+    #conv-header h2 { font-size: 0.9rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #btn-close { background: none; border: none; color: #ccc; font-size: 1.3rem; cursor: pointer; line-height: 1; flex-shrink: 0; }
+    #btn-close:hover { color: #fff; }
+    #conv-meta {
+      padding: 9px 14px; background: #f8f9fa; border-bottom: 1px solid #eee;
+      font-size: 0.78rem; color: #555; display: flex; flex-wrap: wrap; gap: 10px; flex-shrink: 0;
+    }
+    #conv-meta strong { color: #333; }
+    #conv-messages {
+      flex: 1; overflow-y: auto; padding: 14px; display: flex;
+      flex-direction: column; gap: 8px;
+    }
+
+    .msg { max-width: 82%; padding: 8px 11px; border-radius: 14px; font-size: 0.82rem; line-height: 1.45; word-break: break-word; }
+    .msg.usuario    { align-self: flex-end; background: #dcf8c6; border-bottom-right-radius: 3px; }
+    .msg.asistente  { align-self: flex-start; background: #fff; border: 1px solid #e5e5e5; border-bottom-left-radius: 3px; }
+    .msg-time { font-size: 0.67rem; color: #aaa; margin-top: 3px; text-align: right; }
+    .msg.asistente .msg-time { text-align: left; }
+    #conv-empty { text-align: center; color: #aaa; padding: 24px; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+
+<div id="header">
+  <h1>🤖 SecretarIA Admin</h1>
+  <input id="token-input" type="password" placeholder="Pegar ADMIN_TOKEN…" autocomplete="off" />
+  <button id="btn-connect">Conectar</button>
+  <span id="status"></span>
+</div>
+
+<div id="main">
+  <div id="controls">
+    <select id="empresa-select"><option value="">— Empresa —</option></select>
+    <button class="btn btn-primary btn-sm" id="btn-refresh">🔄 Actualizar</button>
+  </div>
+
+  <div id="content-area">
+    <div id="table-section">
+      <div id="placeholder">Seleccioná una empresa para ver los clientes.</div>
+      <table id="clients-table" style="display:none">
+        <thead>
+          <tr>
+            <th>Teléfono</th>
+            <th>Nombre</th>
+            <th>Estado</th>
+            <th title="Bot activo">Bot</th>
+            <th>Último msg</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="clients-tbody"></tbody>
+      </table>
+    </div>
+
+    <div id="conv-panel">
+      <div id="conv-header">
+        <h2 id="conv-title">Conversación</h2>
+        <button id="btn-close">×</button>
+      </div>
+      <div id="conv-meta"></div>
+      <div id="conv-messages"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  let adminToken     = null;
+  let currentEmpId   = null;
+  let currentTel     = null;
+  let clientesData   = [];
+
+  const $  = id => document.getElementById(id);
+  const esc = s => String(s ?? '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+  function setStatus(msg, ok) {
+    const el = $('status');
+    el.textContent = msg;
+    el.className = ok ? 'ok' : 'err';
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'));
+    return d.toLocaleDateString('es-AR', {day:'2-digit',month:'2-digit',year:'2-digit'})
+      + ' ' + d.toLocaleTimeString('es-AR', {hour:'2-digit',minute:'2-digit'});
+  }
+
+  function badgeEstado(e) {
+    const cls = ['principal','agendadora','manual','esperando_mail'].includes(e)
+      ? `badge-${e}` : 'badge-default';
+    return `<span class="badge ${cls}">${esc(e)}</span>`;
+  }
+
+  async function apiFetch(method, path, body) {
+    const opts = {
+      method,
+      headers: { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+    };
+    if (body !== undefined) opts.body = JSON.stringify(body);
+    const res = await fetch(path, opts);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+
+  // ── Conectar ────────────────────────────────────────────────────────
+  async function conectar() {
+    const tok = $('token-input').value.trim();
+    if (!tok) { setStatus('Pegá el token primero.', false); return; }
+    adminToken = tok;
+    setStatus('Conectando…', true);
+    try {
+      const empresas = await apiFetch('GET', '/admin/empresas');
+      const sel = $('empresa-select');
+      sel.innerHTML = '<option value="">— Empresa —</option>';
+      empresas.forEach(e => {
+        const opt = document.createElement('option');
+        opt.value = e.id;
+        opt.textContent = `${e.nombre}  (${e.cantidad_clientes} clientes)`;
+        sel.appendChild(opt);
+      });
+      $('main').style.display = 'block';
+      setStatus(`✓ Conectado — ${empresas.length} empresa(s)`, true);
+    } catch (err) {
+      adminToken = null;
+      setStatus(`Error: ${err.message}`, false);
+    }
+  }
+
+  // ── Cargar clientes ─────────────────────────────────────────────────
+  async function cargarClientes(empId) {
+    currentEmpId = empId;
+    currentTel   = null;
+    $('conv-panel').style.display = 'none';
+    $('clients-table').style.display = 'none';
+    $('placeholder').textContent = 'Cargando…';
+    $('placeholder').style.display = 'block';
+    try {
+      clientesData = await apiFetch('GET', `/admin/clientes?empresa_id=${encodeURIComponent(empId)}`);
+      $('placeholder').style.display = 'none';
+      if (!clientesData.length) {
+        $('placeholder').textContent = 'No hay clientes en esta empresa.';
+        $('placeholder').style.display = 'block';
+        return;
+      }
+      renderTabla();
+      $('clients-table').style.display = 'table';
+    } catch (err) {
+      $('placeholder').textContent = `Error: ${err.message}`;
+      $('placeholder').style.display = 'block';
+    }
+  }
+
+  function renderTabla() {
+    const tbody = $('clients-tbody');
+    tbody.innerHTML = '';
+    clientesData.forEach(c => {
+      const muteado = !c.bot_activo;
+      const tr = document.createElement('tr');
+      if (c.telefono === currentTel) tr.classList.add('selected');
+      tr.innerHTML = `
+        <td><code>${esc(c.telefono)}</code></td>
+        <td>${c.nombre ? esc(c.nombre) : '<em style="color:#bbb">sin nombre</em>'}</td>
+        <td>${badgeEstado(c.estado_agente)}</td>
+        <td class="bot-icon">${muteado ? '🔇' : '🔊'}</td>
+        <td>${fmtDate(c.ultimo_mensaje)}</td>
+        <td class="actions">
+          <button class="btn btn-primary btn-sm" onclick="verConv('${esc(c.telefono)}')">Ver</button>
+          ${muteado
+            ? `<button class="btn btn-unmute btn-sm" onclick="toggleMute('${esc(c.telefono)}',false)">Unmute</button>`
+            : `<button class="btn btn-mute btn-sm" onclick="toggleMute('${esc(c.telefono)}',true)">Mute</button>`
+          }
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  // ── Mute / Unmute ───────────────────────────────────────────────────
+  async function toggleMute(telefono, mute) {
+    try {
+      await apiFetch('POST', mute ? '/admin/mute' : '/admin/unmute', {
+        telefono, empresa_id: currentEmpId,
+      });
+      const c = clientesData.find(x => x.telefono === telefono);
+      if (c) c.bot_activo = !mute;
+      renderTabla();
+      // Si el panel de conversación está abierto para ese cliente, actualizar badge
+      if (currentTel === telefono) actualizarMetaPanel(!mute);
+    } catch (err) {
+      alert(`Error: ${err.message}`);
+    }
+  }
+
+  function actualizarMetaPanel(botActivo) {
+    const span = $('conv-meta').querySelector('.bot-status');
+    if (span) span.textContent = botActivo ? '🔊 Activo' : '🔇 Muteado';
+  }
+
+  // ── Conversación ────────────────────────────────────────────────────
+  async function verConv(telefono) {
+    currentTel = telefono;
+    renderTabla(); // resaltar fila
+    const panel = $('conv-panel');
+    panel.style.display  = 'flex';
+    $('conv-title').textContent = 'Cargando…';
+    $('conv-meta').innerHTML    = '';
+    $('conv-messages').innerHTML = '<div id="conv-empty">Cargando…</div>';
+    try {
+      const d = await apiFetch('GET', `/admin/conversacion/${encodeURIComponent(telefono)}?empresa_id=${encodeURIComponent(currentEmpId)}`);
+      $('conv-title').textContent = d.nombre || telefono;
+
+      const c = clientesData.find(x => x.telefono === telefono);
+      const botActivo = c ? c.bot_activo : d.bot_activo;
+      $('conv-meta').innerHTML = `
+        <span><strong>Tel:</strong> ${esc(telefono)}</span>
+        <span>${badgeEstado(d.estado_agente)}</span>
+        ${d.obra_social ? `<span><strong>OS:</strong> ${esc(d.obra_social)}</span>` : ''}
+        <span class="bot-status">${botActivo ? '🔊 Activo' : '🔇 Muteado'}</span>
+      `;
+
+      const box = $('conv-messages');
+      box.innerHTML = '';
+      if (!d.mensajes.length) {
+        box.innerHTML = '<div id="conv-empty">Sin mensajes.</div>';
+        return;
+      }
+      d.mensajes.forEach(m => {
+        const div = document.createElement('div');
+        div.className = `msg ${m.rol}`;
+        div.innerHTML = `
+          ${esc(m.texto).replace(/\n/g, '<br>')}
+          <div class="msg-time">${fmtDate(m.fecha)}</div>
+        `;
+        box.appendChild(div);
+      });
+      box.scrollTop = box.scrollHeight;
+    } catch (err) {
+      $('conv-title').textContent = 'Error';
+      $('conv-messages').innerHTML = `<div style="color:#c00;padding:14px">${esc(err.message)}</div>`;
+    }
+  }
+
+  // ── Listeners ───────────────────────────────────────────────────────
+  $('btn-connect').addEventListener('click', conectar);
+  $('token-input').addEventListener('keydown', e => { if (e.key === 'Enter') conectar(); });
+  $('empresa-select').addEventListener('change', e => { if (e.target.value) cargarClientes(e.target.value); });
+  $('btn-refresh').addEventListener('click', () => { if (currentEmpId) cargarClientes(currentEmpId); });
+  $('btn-close').addEventListener('click', () => {
+    $('conv-panel').style.display = 'none';
+    currentTel = null;
+    renderTabla();
+  });
+</script>
+</body>
+</html>

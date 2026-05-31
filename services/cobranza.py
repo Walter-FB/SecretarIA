@@ -2,7 +2,7 @@ import unicodedata
 import re
 import logging
 
-from services.secretaria_principal import enviar_mensaje_wpp, enviar_notificacion_a_walter, marcar_leido_wpp
+from agents.herramientas_secretarias import enviar_mensaje_wpp, enviar_notificacion_a_walter, marcar_leido_wpp
 from services.profesionales import (
     get_profesional_by_nombre,
     get_profesional_by_especialidad,
@@ -30,27 +30,26 @@ def _normalizar_cobertura(cobertura: str):
     return "obra social", cobertura.strip()
 
 
-def _resolver_profesional(db, especialidad: str | None):
+def _resolver_profesional(db, especialidad: str | None, empresa_id: str = None):
     """Devuelve el objeto Profesional más apropiado dado un string de especialidad o nombre."""
     if not especialidad:
-        return get_profesional_by_especialidad(db, "psicologo")
+        return get_profesional_by_especialidad(db, "psicologo", empresa_id)
 
-    # Intentar primero por nombre (ej: "Lic. Renals", "Dr. Barros")
-    por_nombre = get_profesional_by_nombre(db, especialidad)
+    por_nombre = get_profesional_by_nombre(db, especialidad, empresa_id)
     if por_nombre:
         return por_nombre
 
-    # Fallback por especialidad normalizada
-    return get_profesional_by_especialidad(db, _normalizar_especialidad(especialidad))
+    return get_profesional_by_especialidad(db, _normalizar_especialidad(especialidad), empresa_id)
 
 
-def generar_mensaje_cobro(db, especialidad: str = None, cobertura: str = None, obra_social: str = None) -> str:
-    profesional = _resolver_profesional(db, especialidad)
+def generar_mensaje_cobro(db, especialidad: str = None, cobertura: str = None, obra_social: str = None, empresa=None) -> str:
+    empresa_id  = empresa.id if empresa else None
+    profesional = _resolver_profesional(db, especialidad, empresa_id)
     modalidad, obra_social_nombre = _normalizar_cobertura(cobertura)
     if modalidad == "obra social" and obra_social:
         obra_social_nombre = obra_social.strip()
 
-    monto           = get_tarifa(profesional, modalidad)
+    monto             = get_tarifa(profesional, modalidad)
     precio_particular = profesional.tarifa_particular if profesional else monto
     esp_display       = "Psicólogo" if (not profesional or profesional.especialidad == "psicologo") else "Psiquiatra"
     prof_nombre       = profesional.nombre if profesional else esp_display
@@ -66,10 +65,14 @@ def generar_mensaje_cobro(db, especialidad: str = None, cobertura: str = None, o
     else:
         mensaje += f"Total a pagar: ${monto:,}\n\n"
 
+    alias   = (empresa.alias_pago if empresa and empresa.alias_pago else PAGO_INFO["alias"])
+    cvu     = (empresa.cvu_pago   if empresa and empresa.cvu_pago   else PAGO_INFO["cvu"])
+    titular = PAGO_INFO["titular"]
+
     mensaje += "Datos para transferir:\n"
-    mensaje += f"• Alias: {PAGO_INFO['alias']}\n"
-    mensaje += f"• Titular: {PAGO_INFO['titular']}\n"
-    mensaje += f"• CVU: {PAGO_INFO['cvu']}\n\n"
+    mensaje += f"• Alias: {alias}\n"
+    mensaje += f"• Titular: {titular}\n"
+    mensaje += f"• CVU: {cvu}\n\n"
     mensaje += "Una vez hecha la transferencia, mandanos el comprobante por este chat. ¡Gracias!"
 
     return mensaje
@@ -81,15 +84,29 @@ async def iniciar_cobranzas(
     cobertura: str = None,
     obra_social: str = None,
     detalle_turno: str = None,
+    empresa_id: str = None,
 ) -> str:
     """
     Envía instrucciones de pago y, si hay turno confirmado, gestiona el email.
     Retorna el próximo estado_agente: 'principal' o 'esperando_mail'.
     """
-    logging.warning(f"[💸 COBRANZAS] Iniciando para {to_number} | especialidad={especialidad} | cobertura={cobertura} | detalle_turno={detalle_turno}")
+    logging.warning(f"[COBRANZAS] {to_number} | esp={especialidad} | cob={cobertura} | turno={detalle_turno}")
     db = SessionLocal()
     try:
-        cliente = db.query(Cliente).filter(Cliente.telefono == to_number).first()
+        # ── Cargar empresa ──────────────────────────────────────────
+        from models import Empresa
+        empresa = None
+        if empresa_id:
+            empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
+        if not empresa:
+            from init_db import EMPRESA_DEFAULT_ID
+            empresa_id = EMPRESA_DEFAULT_ID
+            empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
+
+        cliente = db.query(Cliente).filter(
+            Cliente.telefono == to_number,
+            Cliente.empresa_id == empresa_id
+        ).first()
 
         # Completar cobertura desde BD si no llegó por parámetro
         if cliente and not cobertura:
@@ -107,23 +124,21 @@ async def iniciar_cobranzas(
         # Guardar detalle de turno para el email de confirmación
         if cliente and detalle_turno:
             datos = dict(cliente.datos_extraidos or {})
-            prof  = _resolver_profesional(db, especialidad)
+            prof  = _resolver_profesional(db, especialidad, empresa_id)
             datos["ultimo_turno"]       = detalle_turno
             datos["especialidad_turno"] = prof.especialidad if prof else _normalizar_especialidad(especialidad)
             cliente.datos_extraidos = datos
             db.commit()
             logging.warning(f"[💸 COBRANZAS] Turno guardado: {detalle_turno}")
 
-        mensaje = generar_mensaje_cobro(db, especialidad, cobertura, obra_social)
+        mensaje = generar_mensaje_cobro(db, especialidad, cobertura, obra_social, empresa)
         await enviar_mensaje_wpp(to_number, mensaje)
-        logging.warning(f"[💸 COBRANZAS] Mensaje de cobro enviado a {to_number}")
+        logging.warning(f"[COBRANZAS] Mensaje de cobro enviado a {to_number}")
 
-        nombre = "un paciente"
-        if cliente:
-            nombre = cliente.nombre_completo or (cliente.datos_extraidos or {}).get("nombre_contacto", "un paciente")
-
-        await enviar_notificacion_a_walter(to_number, nombre)
-        logging.warning(f"[💸 COBRANZAS] Notificación enviada a Walter")
+        nombre        = (cliente.nombre_completo if cliente else None) or "un paciente"
+        numero_walter = empresa.numero_walter if empresa else None
+        await enviar_notificacion_a_walter(to_number, nombre, numero_walter)
+        logging.warning(f"[COBRANZAS] Walter notificado")
 
         # Email: solo si hay turno confirmado
         if detalle_turno:
@@ -156,7 +171,7 @@ async def _enviar_email_confirmacion(cliente: Cliente, detalle_turno: str, espec
 
     try:
         datos = cliente.datos_extraidos or {}
-        prof  = _resolver_profesional(db, especialidad or datos.get("especialidad_turno"))
+        prof  = _resolver_profesional(db, especialidad or datos.get("especialidad_turno"), cliente.empresa_id)
         esp   = prof.especialidad if prof else _normalizar_especialidad(especialidad)
 
         cobertura  = cliente.obra_social or "particular"
@@ -186,39 +201,82 @@ async def _enviar_email_confirmacion(cliente: Cliente, detalle_turno: str, espec
             db.close()
 
 
-async def handler_esperando_mail(user_text: str, to_number: str, msg_id: str = None) -> None:
+async def handler_esperando_mail(user_text: str, to_number: str, msg_id: str = None, empresa_id: str = None) -> None:
     """Maneja el estado 'esperando_mail': valida el email, lo guarda y envía confirmación."""
-    logging.warning(f"[📧 ESPERANDO_MAIL] Recibido de {to_number}: '{user_text}'")
+    logging.warning(f"[ESPERANDO_MAIL] {to_number}: '{user_text}'")
     await marcar_leido_wpp(msg_id)
 
     texto = user_text.strip()
     db    = SessionLocal()
     try:
-        cliente = db.query(Cliente).filter(Cliente.telefono == to_number).first()
+        if not empresa_id:
+            from init_db import EMPRESA_DEFAULT_ID
+            empresa_id = EMPRESA_DEFAULT_ID
+
+        from models import Empresa
+        empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
+
+        cliente = db.query(Cliente).filter(
+            Cliente.telefono == to_number,
+            Cliente.empresa_id == empresa_id
+        ).first()
         if not cliente:
-            logging.warning(f"[📧 ESPERANDO_MAIL] ⚠️ Cliente {to_number} no encontrado.")
+            logging.warning(f"[ESPERANDO_MAIL] Cliente {to_number} no encontrado.")
             return
 
+        datos = dict(cliente.datos_extraidos or {})
+
         if _EMAIL_RE.match(texto):
-            logging.warning(f"[📧 ESPERANDO_MAIL] Email válido: {texto}")
+            logging.warning(f"[ESPERANDO_MAIL] Email válido: {texto}")
             cliente.mail          = texto
             cliente.estado_agente = "principal"
+            datos.pop("intentos_email", None)
+            cliente.datos_extraidos = datos
             db.commit()
 
             await enviar_mensaje_wpp(to_number, "¡Perfecto! Ya te envío la confirmación del turno a ese correo. ¡Hasta pronto!")
 
-            datos        = cliente.datos_extraidos or {}
             detalle      = datos.get("ultimo_turno", "Tu próximo turno en Clínica Abriness")
             especialidad = datos.get("especialidad_turno")
-            logging.warning(f"[📧 ESPERANDO_MAIL] Disparando email | detalle={detalle}")
+            logging.warning(f"[ESPERANDO_MAIL] Disparando email | detalle={detalle}")
             await _enviar_email_confirmacion(cliente, detalle, especialidad, db)
 
         else:
-            logging.warning(f"[📧 ESPERANDO_MAIL] Email inválido: '{texto}'")
-            await enviar_mensaje_wpp(
-                to_number,
-                "Hmm, eso no parece un email válido 🤔\n"
-                "Por favor enviame tu correo electrónico (ej: nombre@gmail.com)."
-            )
+            intentos = datos.get("intentos_email", 0) + 1
+            datos["intentos_email"] = intentos
+            cliente.datos_extraidos = datos
+            db.commit()
+
+            logging.warning(f"[ESPERANDO_MAIL] Email inválido: '{texto}' | intento {intentos}/3")
+
+            if intentos >= 3:
+                cliente.bot_activo    = False
+                cliente.estado_agente = "manual"
+                datos.pop("intentos_email", None)
+                cliente.datos_extraidos = datos
+                db.commit()
+
+                numero_walter = empresa.numero_walter if empresa else None
+                await _notificar_walter_email_fallido(to_number, numero_walter)
+                await enviar_mensaje_wpp(
+                    to_number,
+                    "No te preocupes, un agente te va a contactar para ayudarte con la confirmación."
+                )
+                logging.warning(f"[ESPERANDO_MAIL] 3 intentos fallidos — {to_number} derivado a manual.")
+            else:
+                await enviar_mensaje_wpp(
+                    to_number,
+                    "Hmm, eso no parece un email válido 🤔\n"
+                    "Por favor enviame tu correo electrónico (ej: nombre@gmail.com)."
+                )
     finally:
         db.close()
+
+
+async def _notificar_walter_email_fallido(telefono: str, numero_walter: str = None) -> None:
+    from agents.herramientas_secretarias import NUMERO_WALTER
+    destino = numero_walter or NUMERO_WALTER
+    await enviar_mensaje_wpp(
+        destino,
+        f"El paciente {telefono} no pudo enviar un email válido tras 3 intentos. Revisá manualmente."
+    )
