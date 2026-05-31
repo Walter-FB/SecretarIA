@@ -12,69 +12,11 @@ load_dotenv()
 from database import engine, Base
 import models  # noqa: F401 — necesario para que Base.metadata conozca las tablas
 
-# Crear tablas al iniciar (si no existen)
-Base.metadata.create_all(bind=engine)
-
-# ── Aplicar columnas multi-tenant si Alembic no las agregó ────────────
-# Necesario porque create_all() no altera tablas existentes y
-# la migración 4faaa4399732 puede haber fallado silenciosamente.
-def _aplicar_columnas_faltantes():
-    from sqlalchemy import text, inspect
-    inspector = inspect(engine)
-    try:
-        cols_emp = {c["name"] for c in inspector.get_columns("empresas")}
-        cols_cli = {c["name"] for c in inspector.get_columns("clientes")}
-        cols_msg = {c["name"] for c in inspector.get_columns("mensajes")}
-    except Exception:
-        return  # Si las tablas no existen todavía, create_all() las creará completas
-
-    with engine.begin() as conn:
-        if "bot_activo" not in cols_emp:
-            print("[DB] Agregando columnas multi-tenant a empresas...")
-            conn.execute(text("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS bot_activo           BOOLEAN"))
-            conn.execute(text("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS numero_walter        VARCHAR"))
-            conn.execute(text("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS tools_habilitadas    JSON"))
-            conn.execute(text("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS phone_number_id      VARCHAR"))
-            conn.execute(text("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS webhook_verify_token VARCHAR"))
-            conn.execute(text("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS calendar_id          VARCHAR"))
-            conn.execute(text("""
-                DO $$ BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_empresas_phone_number_id')
-                    THEN ALTER TABLE empresas ADD CONSTRAINT uq_empresas_phone_number_id UNIQUE (phone_number_id);
-                    END IF;
-                END $$;
-            """))
-            print("[DB] Columnas de empresas OK.")
-
-        if "profesional_id" not in cols_cli:
-            print("[DB] Agregando profesional_id a clientes...")
-            conn.execute(text("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS profesional_id VARCHAR"))
-            conn.execute(text("""
-                DO $$ BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_clientes_profesional_id')
-                    THEN ALTER TABLE clientes ADD CONSTRAINT fk_clientes_profesional_id
-                         FOREIGN KEY (profesional_id) REFERENCES profesionales(id);
-                    END IF;
-                END $$;
-            """))
-
-        if "bot_activo" not in cols_cli:
-            print("[DB] Agregando bot_activo a clientes...")
-            conn.execute(text("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS bot_activo BOOLEAN"))
-
-        if "empresa_id" not in cols_msg:
-            print("[DB] Agregando empresa_id a mensajes...")
-            conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS empresa_id VARCHAR"))
-            conn.execute(text("""
-                DO $$ BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_mensajes_empresa_id')
-                    THEN ALTER TABLE mensajes ADD CONSTRAINT fk_mensajes_empresa_id
-                         FOREIGN KEY (empresa_id) REFERENCES empresas(id);
-                    END IF;
-                END $$;
-            """))
-
-_aplicar_columnas_faltantes()
+# En local (SQLite) creamos las tablas directo porque SQLite no soporta
+# todas las operaciones de Alembic (FKs en ALTER TABLE, etc.).
+# En Railway (PostgreSQL) el releaseCommand "alembic upgrade head" lo maneja todo.
+if engine.dialect.name == "sqlite":
+    Base.metadata.create_all(bind=engine)
 
 # Asegurarse de que exista la empresa por defecto
 from init_db import seed_empresa_default, seed_profesionales, seed_abriness_multitenant
