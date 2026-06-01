@@ -67,7 +67,7 @@ def generar_mensaje_cobro(db, especialidad: str = None, cobertura: str = None, o
 
     alias   = (empresa.alias_pago if empresa and empresa.alias_pago else PAGO_INFO["alias"])
     cvu     = (empresa.cvu_pago   if empresa and empresa.cvu_pago   else PAGO_INFO["cvu"])
-    titular = PAGO_INFO["titular"]
+    titular = (empresa.nombre     if empresa else PAGO_INFO["titular"])
 
     mensaje += "Datos para transferir:\n"
     mensaje += f"• Alias: {alias}\n"
