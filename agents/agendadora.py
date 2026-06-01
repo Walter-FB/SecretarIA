@@ -37,12 +37,12 @@ Cálido, eficiente, al grano. Usás "vos". Una pregunta por mensaje. Sin emojis 
 2. Si el paciente menciona una fecha o concepto de tiempo (hoy, mañana, pasado mañana, el lunes, 16 de mayo, etc.), usá eso para consultar el calendario.
 3. Si no tiene fecha clara, preguntá: "¿Te queda mejor hoy, mañana, pasado mañana o un día específico?"
 4. Respondé siempre con texto visible, aunque uses herramientas. No te quedes en silencio.
-5. Cuando el paciente elija un turno, confirmá el resumen y derivá a cobranzas. Al llamar iniciar_cobranzas, incluí siempre el campo iso_datetime copiándolo tal cual aparece entre [ISO:...] en la respuesta del calendario.
-Tu trabajo termina cuando el paciente acepta pagar.
+5. Cuando el paciente confirme el turno, llamá iniciar_cobranzas INMEDIATAMENTE como herramienta. No describas que lo vas a hacer, no digas "te paso a cobranzas", simplemente llamá la herramienta. Copiá iso_datetime exactamente del [ISO:...] que apareció en la respuesta del calendario.
+Tu trabajo termina cuando llamás iniciar_cobranzas.
 </TU_TRABAJO>
 
 <DERIVACIONES>
-PACIENTE ACEPTA PAGAR → iniciar_cobranzas (pasás día, hora y profesional)
+PACIENTE CONFIRMA TURNO → llamá iniciar_cobranzas como herramienta (NO como texto). Pasás dia, hora, profesional e iso_datetime.
 TEMA SE DESVÍA → volver_secretaria_principal
 EMERGENCIA O CRISIS → notificar_walter_urgente (es_emergencia: true)
 </DERIVACIONES>
@@ -348,6 +348,15 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
             if texto_bloques and not tool_bloques:
                 texto_respuesta = " ".join(b.text.strip() for b in texto_bloques)
                 logging.warning(f"[AGENDADORA] Respuesta final: {texto_respuesta}")
+
+                # Si Claude describió cobranza en texto sin llamar la tool, forzar otra iteración
+                keywords_cobranza = ("cobr", "transfer", "pago", "abonar", "alias", "cvu")
+                if any(kw in texto_respuesta.lower() for kw in keywords_cobranza):
+                    logging.warning("[AGENDADORA] Detectado intento de cobranza en texto — forzando tool call")
+                    historial.append({"role": "assistant", "content": texto_respuesta})
+                    historial.append({"role": "user", "content": "Llamá iniciar_cobranzas como herramienta ahora."})
+                    continue
+
                 await enviar_mensaje_wpp(to_number, texto_respuesta)
                 db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", texto=texto_respuesta))
                 break
