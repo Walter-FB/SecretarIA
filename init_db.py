@@ -144,9 +144,6 @@ def seed_abriness_multitenant():
         if not empresa.cvu_pago:
             cambios["cvu_pago"] = "124235243423432432"
 
-        if not empresa.titular_pago:
-            cambios["titular_pago"] = "Juan Manuel Barros Ferreyra"
-
         if not empresa.numero_walter:
             cambios["numero_walter"] = "5491131720843"
 
