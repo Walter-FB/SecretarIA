@@ -6,7 +6,7 @@ import os
 import re
 
 VERIFY_TOKEN  = os.getenv("WEBHOOK_VERIFY_TOKEN", "secretarIA")
-LIMITE_MENSAJES = 20
+LIMITE_MENSAJES = 35
 
 router = APIRouter()
 

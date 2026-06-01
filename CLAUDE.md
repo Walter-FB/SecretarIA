@@ -4,6 +4,12 @@ Documentación técnica completa para futuros agentes. Leé todo antes de tocar 
 
 ---
 
+## REGLAS PARA EL AGENTE — leer primero
+
+- **`agents/secretaria_principal.py` — NO modificar el prompt ni la lógica sin que Walter lo pida explícitamente.** Si detectás algo mejorable, mencionalo como sugerencia y esperá aprobación. El prompt de Abby es responsabilidad de Walter.
+
+---
+
 ## Qué es esto
 
 Bot de WhatsApp para **Clínica Abriness** (salud mental). Funciona como secretaria virtual: atiende pacientes, coordina turnos en Google Calendar y gestiona cobros por transferencia bancaria. Corre en Railway (Python/FastAPI). La interfaz con el usuario es 100% WhatsApp — no hay front-end web.

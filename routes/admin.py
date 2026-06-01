@@ -2,11 +2,14 @@ import os
 import secrets
 import logging
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Header
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from database import SessionLocal
 from models import Cliente, Mensaje, Empresa
+
+VENTANA_HORAS = 20  # WhatsApp cierra la sesión libre a las 24h; usamos 20h de margen
 
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 if not ADMIN_TOKEN:
@@ -152,5 +155,60 @@ def unmute_cliente(body: MuteBody):
         db.commit()
         logging.warning(f"[ADMIN] unmute → {body.telefono}")
         return {"ok": True, "bot_activo": True}
+    finally:
+        db.close()
+
+
+class EnviarBody(BaseModel):
+    telefono:   str
+    empresa_id: str
+    mensaje:    str
+
+
+@router.post("/enviar", dependencies=[Depends(_require_admin)])
+async def enviar_mensaje_admin(body: EnviarBody):
+    if not body.mensaje.strip():
+        raise HTTPException(status_code=400, detail="El mensaje no puede estar vacío")
+
+    db = SessionLocal()
+    try:
+        cliente = db.query(Cliente).filter(
+            Cliente.telefono   == body.telefono,
+            Cliente.empresa_id == body.empresa_id,
+        ).first()
+        if not cliente:
+            raise HTTPException(status_code=404, detail="Cliente no encontrado")
+
+        # Verificar ventana de 20h desde el último mensaje del usuario
+        ultimo_usuario = (
+            db.query(Mensaje)
+            .filter(Mensaje.cliente_id == cliente.id, Mensaje.rol == "usuario")
+            .order_by(Mensaje.fecha_creacion.desc())
+            .first()
+        )
+        if not ultimo_usuario:
+            raise HTTPException(status_code=400, detail="El cliente nunca escribió — sin ventana activa")
+
+        ahora = datetime.now(timezone.utc).replace(tzinfo=None)
+        if ahora - ultimo_usuario.fecha_creacion > timedelta(hours=VENTANA_HORAS):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Ventana cerrada — el cliente escribió hace más de {VENTANA_HORAS}h"
+            )
+
+        from agents.herramientas_secretarias import enviar_mensaje_wpp
+        await enviar_mensaje_wpp(body.telefono, body.mensaje.strip())
+
+        # Guardar en historial como mensaje del asistente
+        db.add(Mensaje(
+            cliente_id = cliente.id,
+            empresa_id = body.empresa_id,
+            rol        = "asistente",
+            texto      = body.mensaje.strip(),
+        ))
+        db.commit()
+
+        logging.warning(f"[ADMIN] Mensaje enviado a {body.telefono}")
+        return {"ok": True}
     finally:
         db.close()

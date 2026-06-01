@@ -17,6 +17,7 @@ class Empresa(Base):
     monto_sena        = Column(Integer, nullable=True)
     alias_pago        = Column(String, nullable=True)
     cvu_pago          = Column(String, nullable=True)
+    titular_pago      = Column(String, nullable=True)   # Titular de la cuenta bancaria
     descripcion_pago  = Column(String, nullable=True)
     usa_calendar      = Column(Boolean, default=False)
     usa_seguimiento   = Column(Boolean, default=True)

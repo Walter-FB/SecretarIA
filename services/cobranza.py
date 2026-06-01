@@ -65,9 +65,9 @@ def generar_mensaje_cobro(db, especialidad: str = None, cobertura: str = None, o
     else:
         mensaje += f"Total a pagar: ${monto:,}\n\n"
 
-    alias   = (empresa.alias_pago if empresa and empresa.alias_pago else PAGO_INFO["alias"])
-    cvu     = (empresa.cvu_pago   if empresa and empresa.cvu_pago   else PAGO_INFO["cvu"])
-    titular = PAGO_INFO["titular"]
+    alias   = (empresa.alias_pago    if empresa and empresa.alias_pago    else PAGO_INFO["alias"])
+    cvu     = (empresa.cvu_pago      if empresa and empresa.cvu_pago      else PAGO_INFO["cvu"])
+    titular = (empresa.titular_pago  if empresa and empresa.titular_pago  else PAGO_INFO["titular"])
 
     mensaje += "Datos para transferir:\n"
     mensaje += f"• Alias: {alias}\n"
@@ -250,8 +250,7 @@ async def handler_esperando_mail(user_text: str, to_number: str, msg_id: str = N
             logging.warning(f"[ESPERANDO_MAIL] Email inválido: '{texto}' | intento {intentos}/3")
 
             if intentos >= 3:
-                cliente.bot_activo    = False
-                cliente.estado_agente = "manual"
+                cliente.estado_agente = "principal"
                 datos.pop("intentos_email", None)
                 cliente.datos_extraidos = datos
                 db.commit()
@@ -260,9 +259,9 @@ async def handler_esperando_mail(user_text: str, to_number: str, msg_id: str = N
                 await _notificar_walter_email_fallido(to_number, numero_walter)
                 await enviar_mensaje_wpp(
                     to_number,
-                    "No te preocupes, un agente te va a contactar para ayudarte con la confirmación."
+                    "No hay problema, te confirmamos el turno por WhatsApp. ¡Hasta pronto!"
                 )
-                logging.warning(f"[ESPERANDO_MAIL] 3 intentos fallidos — {to_number} derivado a manual.")
+                logging.warning(f"[ESPERANDO_MAIL] 3 intentos fallidos — {to_number} vuelve a principal.")
             else:
                 await enviar_mensaje_wpp(
                     to_number,

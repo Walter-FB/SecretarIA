@@ -40,15 +40,12 @@ app.include_router(admin.router)
 # JOBS PROGRAMADOS — APScheduler
 # ===================================================================
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from agents.analista_nocturno import job_analista_nocturno
-from services.seguimiento import job_seguimiento
+from agents.seguimiento import job_seguimiento
 
 scheduler = AsyncIOScheduler()
 
-# Job 1: Analista Nocturno — 00:00 UTC = 21:00 Argentina (UTC-3)
-scheduler.add_job(job_analista_nocturno, 'cron', hour=0, minute=0, id='analista_nocturno')
-
-# Job 2: Seguimiento — Cada 1 hora
+# Seguimiento dinámico — cada 1 hora
+# Fase 1: reactivación si inactivo 1h | Fase 2: análisis si no responde | Fase 3: remarketing
 scheduler.add_job(job_seguimiento, 'interval', hours=1, id='seguimiento_hourly')
 
 
@@ -56,8 +53,7 @@ scheduler.add_job(job_seguimiento, 'interval', hours=1, id='seguimiento_hourly')
 async def startup_event():
     scheduler.start()
     print("[⏰ SCHEDULER] Jobs programados:")
-    print("   → Analista Nocturno: todos los días a las 21:00 ARG")
-    print("   → Seguimiento: cada 1 hora")
+    print("   → Seguimiento dinámico: cada 1 hora (reactivación + análisis + remarketing)")
 
 
 @app.on_event("shutdown")

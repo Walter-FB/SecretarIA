@@ -1,4 +1,5 @@
 import logging
+import re
 from models import Cliente
 
 DEFINITION = {
@@ -20,7 +21,13 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     Si encuentra datos en otro registro, los copia al cliente actual.
     Retorna (content, derivar). derivar siempre None.
     """
-    dni_buscado = tool_input.get("dni", "").strip()
+    dni_raw     = tool_input.get("dni", "").strip()
+    dni_buscado = re.sub(r'\D', '', dni_raw)  # normalizar: quitar puntos/espacios
+    if not (7 <= len(dni_buscado) <= 8):
+        return (
+            f"DNI '{dni_raw}' inválido. Pedile al paciente que confirme su DNI (7 u 8 dígitos).",
+            None,
+        )
     logging.warning(f"[TOOL verificar_paciente_existente] Buscando DNI {dni_buscado}")
 
     encontrado = session.query(Cliente).filter(Cliente.dni == dni_buscado).first()
