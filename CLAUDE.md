@@ -8,6 +8,14 @@ Documentación técnica completa para futuros agentes. Leé todo antes de tocar 
 
 - **`agents/secretaria_principal.py` — NO modificar el prompt ni la lógica sin que Walter lo pida explícitamente.** Si detectás algo mejorable, mencionalo como sugerencia y esperá aprobación. El prompt de Abby es responsabilidad de Walter.
 
+- **Alembic — el agente se encarga de los deploys y de las migraciones. Flujo obligatorio antes de cada push:**
+  1. Si se modificó `models.py`, generar la migración con `alembic revision --autogenerate -m "descripcion"` (nunca escribir el archivo a mano).
+  2. Probar localmente con `alembic upgrade head` contra la BD local antes de pushear.
+  3. Verificar que `alembic current` muestre la revisión esperada.
+  4. Solo después hacer `git push`. Railway aplica `alembic upgrade head` automáticamente en el releaseCommand — si el upgrade local funcionó, el de Railway también funciona.
+  - **Nunca crear columnas en `models.py` sin su migración correspondiente.**
+  - **Nunca crear la migración a mano** — siempre `--autogenerate` para que Alembic detecte el diff real entre modelo y BD.
+
 ---
 
 ## Qué es esto
