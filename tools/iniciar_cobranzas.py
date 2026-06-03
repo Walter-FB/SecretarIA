@@ -80,7 +80,10 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     if iso_dt:
         try:
             from datetime import datetime
-            start = datetime.fromisoformat(iso_dt).astimezone(TIMEZONE)
+            dt = datetime.fromisoformat(iso_dt)
+            # Claude a veces elimina el offset "-03:00" del ISO generado por consultar_calendar.
+            # Si llega naive, ya es hora argentina — no convertir desde UTC.
+            start = dt.replace(tzinfo=TIMEZONE) if dt.tzinfo is None else dt.astimezone(TIMEZONE)
         except ValueError:
             start = None
     else:

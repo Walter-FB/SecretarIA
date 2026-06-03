@@ -23,6 +23,7 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     especialidad = tool_input.get("especialidad", "no especificada")
     cobertura    = tool_input.get("cobertura",    "no especificada")
     profesional  = tool_input.get("profesional",  "")
+    empresa_id   = empresa.id if empresa else None
 
     logging.warning(f"[TOOL iniciar_agendamiento] {cliente.telefono} | {especialidad} | {cobertura} | prof={profesional}")
 
@@ -34,8 +35,6 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
             cliente.profesional_id = prof_obj.id
             session.commit()
             logging.warning(f"[TOOL iniciar_agendamiento] Profesional asignado: {prof_obj.nombre}")
-
-    empresa_id = empresa.id if empresa else None
 
     from agents.herramientas_secretarias import enviar_mensaje_wpp
     await enviar_mensaje_wpp(
