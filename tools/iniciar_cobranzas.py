@@ -59,9 +59,10 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     Retorna (content, "cobranzas").
     """
     from agents.agendadora import (
-        _parse_fecha_hora, _build_calendar_service, _is_busy, _crear_evento
+        _parse_fecha, _parse_hora, _build_calendar_service, _is_busy, _crear_evento
     )
     from zoneinfo import ZoneInfo
+    from datetime import datetime
     import os
 
     dia         = tool_input.get("dia", "")
@@ -79,7 +80,6 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
 
     if iso_dt:
         try:
-            from datetime import datetime
             dt = datetime.fromisoformat(iso_dt)
             # Claude a veces elimina el offset "-03:00" del ISO generado por consultar_calendar.
             # Si llega naive, ya es hora argentina — no convertir desde UTC.
@@ -87,7 +87,11 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
         except ValueError:
             start = None
     else:
-        start, _ = _parse_fecha_hora(f"{dia} {hora}")
+        texto = f"{dia} {hora}"
+        fecha = _parse_fecha(texto)
+        h     = _parse_hora(texto)
+        start = datetime(fecha.year, fecha.month, fecha.day,
+                         h if h is not None else 10, 0, tzinfo=TIMEZONE) if fecha else None
 
     end = (start + timedelta(hours=1)) if start else None
 

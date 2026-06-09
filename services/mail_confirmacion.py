@@ -164,7 +164,7 @@ async def enviar_mail_confirmacion(
     descuento: int = None,
     precio_lista: int = None,
 ) -> bool:
-    """Sends the HTML confirmation email via Resend. Returns True on success."""
+    """Sends the HTML confirmation email via Brevo. Returns True on success."""
     if not mail_destino:
         logging.warning("[📧 MAIL] Sin dirección de email, no se envía.")
         return False

@@ -247,8 +247,9 @@ Enviados **desde el número `empresa.numero_walter`** (cualquier otro número lo
 El número se normaliza antes de buscar (se ignoran espacios, guiones, código de país — solo dígitos). Implementado en `_buscar_cliente_normalizado()` en `routes/whatsapp.py`.
 
 **Mute automático:** `cliente.bot_activo` también se pone en `False` automáticamente cuando:
-- El cliente no logra ingresar un email válido después de 3 intentos (estado → `manual`)
 - `notificar_walter_urgente` escala una emergencia (estado → `manual`)
+
+**Email fallido (3 intentos):** el bot NO se silencia. Después de 3 intentos inválidos, el estado vuelve a `"principal"` (bot sigue activo), se envía un mensaje de cierre al paciente y se notifica a Walter.
 
 Walter puede usar `/unmute` para reactivar el bot en cualquiera de esos casos.
 
@@ -284,7 +285,7 @@ Walter puede usar `/unmute` para reactivar el bot en cualquiera de esos casos.
 **`handler_esperando_mail` — retry counter:**
 - Email válido → guarda, envía email, `estado → principal`
 - Email inválido → incrementa `datos_extraidos["intentos_email"]`
-- Después de 3 intentos fallidos → `cliente.bot_activo = False`, `estado → manual`, notifica a Walter
+- Después de 3 intentos fallidos → `estado → principal` (bot sigue activo), notifica a Walter, mensaje de cierre al paciente
 
 ---
 
@@ -514,7 +515,7 @@ Mandar desde el número de prueba (con `/borrarChat` para limpiar estado previo)
 **Flujo esperando_mail con errores:**
 1. Llegar al estado `esperando_mail` (completar turno sin email previo)
 2. Mandar 3 textos que no son emails → bot responde con aviso y mensaje final de derivación
-3. Verificar `cliente.bot_activo = False` en BD y Walter recibió notificación
+3. Verificar que Walter recibió notificación y el cliente volvió a estado `principal`
 
 ### 6. Verificar multi-tenant en Railway
 

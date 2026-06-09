@@ -58,9 +58,14 @@ Si detectás crisis o urgencia emocional:
 # ===================================================================
 # GOOGLE CALENDAR — Service Account (no necesita OAuth interactivo)
 # ===================================================================
-SCOPES   = ['https://www.googleapis.com/auth/calendar.events',
-            'https://www.googleapis.com/auth/calendar.readonly']
-TIMEZONE = ZoneInfo('America/Argentina/Buenos_Aires')
+SCOPES        = ['https://www.googleapis.com/auth/calendar.events',
+                 'https://www.googleapis.com/auth/calendar.readonly']
+TIMEZONE      = ZoneInfo('America/Argentina/Buenos_Aires')
+HORA_APERTURA = 9
+HORA_CIERRE   = 18
+DIAS_BLOQUEO_MEDIODIA = {0, 1, 2}  # lunes, martes, miercoles
+HORA_BLOQUEO_INICIO = 13
+HORA_BLOQUEO_FIN    = 17
 
 
 def _build_calendar_service():
@@ -94,133 +99,184 @@ def _normalize(text: str) -> str:
     return re.sub(r'[^a-z0-9áéíóúüñ\s/\-:\.]', ' ', text.lower())
 
 
-def _parse_fecha_hora(texto: str) -> tuple[datetime, datetime] | tuple[None, None]:
-    if not texto:
-        return None, None
+def _parse_fecha(texto: str):
+    """Devuelve date o None. Solo parsea la fecha, ignora la hora."""
+    t = _normalize(
+        texto.lower()
+        .replace('pasado mañana', '__pm__')
+        .replace(' de la mañana', '').replace(' de la tarde', '').replace(' de la noche', '')
+        .replace(' a las ', ' ').replace('hs', '').replace('horas', '')
+    )
+    hoy = datetime.now(TIMEZONE).date()
 
+    if '__pm__' in t or 'pasado manana' in t:
+        return hoy + timedelta(days=2)
+    if 'mañana' in t:
+        return hoy + timedelta(days=1)
+    if 'hoy' in t:
+        return hoy
+
+    dias_semana = {
+        'lunes': 0, 'martes': 1, 'miercoles': 2, 'jueves': 3,
+        'viernes': 4, 'sabado': 5, 'domingo': 6,
+    }
+    for nombre, target in dias_semana.items():
+        if nombre in t:
+            delta = (target - hoy.weekday()) % 7 or 7
+            return hoy + timedelta(days=delta)
+
+    m = re.search(r'(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?', t)
+    if m:
+        dia, mes = int(m.group(1)), int(m.group(2))
+        anio = int(m.group(3)) if m.group(3) else hoy.year
+        if anio < 100: anio += 2000
+        try: return datetime(anio, mes, dia).date()
+        except ValueError: pass
+
+    meses = {
+        'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4, 'mayo': 5, 'junio': 6,
+        'julio': 7, 'agosto': 8, 'septiembre': 9, 'octubre': 10, 'noviembre': 11, 'diciembre': 12,
+    }
+    for nombre, mes in meses.items():
+        if nombre in t:
+            dm = re.search(r'(\d{1,2})', t)
+            if dm:
+                try:
+                    f = datetime(hoy.year, mes, int(dm.group(1))).date()
+                    return f if f >= hoy else datetime(hoy.year + 1, mes, int(dm.group(1))).date()
+                except ValueError: pass
+            break
+
+    return None
+
+
+def _parse_hora(texto: str) -> int | None:
+    """
+    Devuelve la hora como entero (0-23) o None si el texto no tiene hora explícita.
+    Maneja: "13", "1 pm", "13:30", "a las 9", "9hs".
+    """
     t = texto.lower()
-    t = t.replace('pasado mañana', '__pasadomañana__')
-    t = t.replace(' de la mañana', ' am').replace(' de la tarde', ' pm').replace(' de la noche', ' pm')
-    t = t.replace(' a las ', ' ').replace('hs', '').replace('horas', '')
-    t = _normalize(t)
 
-    hoy  = datetime.now(TIMEZONE).date()
-    fecha = None
+    # HH:MM explícito — tiene prioridad
+    m = re.search(r'\b(\d{1,2}):(\d{2})\b', t)
+    if m:
+        h = int(m.group(1))
+        return h + 12 if 'pm' in t and h < 12 else h
 
-    if '__pasadomañana__' in t or 'pasado manana' in t:
-        fecha = hoy + timedelta(days=2)
-    elif 'mañana' in t:
-        fecha = hoy + timedelta(days=1)
-    elif 'hoy' in t:
-        fecha = hoy
-    else:
-        dias_semana = {'lunes': 0, 'martes': 1, 'miercoles': 2, 'miércoles': 2,
-                       'jueves': 3, 'viernes': 4, 'sabado': 5, 'sábado': 5, 'domingo': 6}
-        for nombre, target in dias_semana.items():
-            if nombre in t:
-                delta = (target - hoy.weekday()) % 7 or 7
-                fecha = hoy + timedelta(days=delta)
-                break
+    # "a las N" o "las N"
+    m = re.search(r'(?:a\s+las?|las?)\s+(\d{1,2})', t)
+    if m:
+        h = int(m.group(1))
+        if 'pm' in t and h < 12: h += 12
+        if 'am' in t and h == 12: h = 0
+        return h
 
-    if fecha is None:
-        m = re.search(r'(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?', t)
-        if m:
-            dia, mes = int(m.group(1)), int(m.group(2))
-            anio = int(m.group(3)) if m.group(3) else hoy.year
-            if anio < 100: anio += 2000
-            try: fecha = datetime(anio, mes, dia).date()
-            except ValueError: pass
+    # Número pegado a "hs" o "h" — "9hs", "13h"
+    m = re.search(r'\b(\d{1,2})\s*hs?\b', t)
+    if m:
+        h = int(m.group(1))
+        if 'pm' in t and h < 12: h += 12
+        return h
 
-    if fecha is None:
-        meses = {'enero':1,'febrero':2,'marzo':3,'abril':4,'mayo':5,'junio':6,
-                 'julio':7,'agosto':8,'septiembre':9,'octubre':10,'noviembre':11,'diciembre':12}
-        for nombre, mes in meses.items():
-            if nombre in t:
-                dm = re.search(r'(\d{1,2})', t)
-                if dm:
-                    try:
-                        fecha = datetime(hoy.year, mes, int(dm.group(1))).date()
-                        if fecha < hoy: fecha = datetime(hoy.year + 1, mes, int(dm.group(1))).date()
-                    except ValueError: pass
-                break
+    # Número suelto con "am"/"pm" explícito — "1 pm", "9am"
+    m = re.search(r'\b(\d{1,2})\s*(am|pm)\b', t)
+    if m:
+        h = int(m.group(1))
+        if m.group(2) == 'pm' and h < 12: h += 12
+        if m.group(2) == 'am' and h == 12: h = 0
+        return h
 
-    if fecha is None:
-        return None, None
-
-    hora, minuto = 10, 0
-
-    # Buscar HH:MM explícito primero
-    hm_explicito = re.search(r'\b(\d{1,2}):(\d{2})\b', t)
-    if hm_explicito:
-        hora   = int(hm_explicito.group(1))
-        minuto = int(hm_explicito.group(2))
-        if hora < 7: hora += 12
-    else:
-        # Buscar TODOS los números sueltos y tomar el ÚLTIMO.
-        # El número del día aparece primero ("miércoles 16 15hs" → [16, 15]),
-        # la hora siempre es el último número en el string.
-        todos = list(re.finditer(r'\b(\d{1,2})\b', t))
-        if todos:
-            ultimo = int(todos[-1].group(1))
-            if 1 <= ultimo <= 22:  # validar rango razonable de hora
-                hora = ultimo
-                if hora < 7: hora += 12
-
-    start = datetime(fecha.year, fecha.month, fecha.day, hora, minuto, tzinfo=TIMEZONE)
-    return start, start + timedelta(hours=1)
+    return None
 
 
-def _consultar_calendar(texto_fecha: str, dias: int = 3, calendar_id: str = None) -> str:
-    """Devuelve texto con los horarios disponibles para mostrarle a Claude."""
+def _slots_disponibles(
+    desde: datetime,
+    hasta: datetime,
+    busy_ranges: list,
+    hora_pedida: int | None,
+) -> list[datetime]:
+    """
+    Devuelve hasta 4 slots libres de 1h entre HORA_APERTURA y HORA_CIERRE.
+    El primer día arranca desde hora_pedida si se especificó; días siguientes desde HORA_APERTURA.
+    """
+    slots  = []
+    cursor = desde
+
+    while cursor < hasta and len(slots) < 4:
+        dia      = cursor.date()
+        apertura = cursor.replace(hour=HORA_APERTURA, minute=0, second=0, microsecond=0)
+        cierre   = cursor.replace(hour=HORA_CIERRE,   minute=0, second=0, microsecond=0)
+
+        if dia == desde.date() and hora_pedida is not None:
+            h = max(HORA_APERTURA, min(HORA_CIERRE - 1, hora_pedida))
+            apertura = apertura.replace(hour=h)
+
+        slot = apertura
+        while slot + timedelta(hours=1) <= cierre and len(slots) < 4:
+            fin   = slot + timedelta(hours=1)
+            libre = (
+                not _bloqueado_por_regla_horaria(slot, fin)
+                and not any(fin > bs and slot < be for bs, be in busy_ranges)
+            )
+            if libre:
+                slots.append(slot)
+            slot += timedelta(hours=1)
+
+        cursor = (cursor + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    return slots
+
+
+def _bloqueado_por_regla_horaria(start: datetime, end: datetime) -> bool:
+    """Bloquea turnos de lunes a miercoles entre 13:00 y 17:00."""
+    if start.weekday() not in DIAS_BLOQUEO_MEDIODIA:
+        return False
+
+    inicio_bloqueo = start.replace(hour=HORA_BLOQUEO_INICIO, minute=0, second=0, microsecond=0)
+    fin_bloqueo = start.replace(hour=HORA_BLOQUEO_FIN, minute=0, second=0, microsecond=0)
+    return end > inicio_bloqueo and start < fin_bloqueo
+
+
+def _consultar_calendar(texto_fecha: str, dias: int = 1, calendar_id: str = None) -> str:
+    """Devuelve texto con los slots disponibles para pasarle a Claude."""
     if not calendar_id:
         calendar_id = os.getenv("CALENDAR_ID", "primary")
     try:
-        start, _ = _parse_fecha_hora(texto_fecha)
-        if start is None:
-            fecha_inicio = datetime.now(TIMEZONE).replace(hour=0, minute=0, second=0, microsecond=0)
-        else:
-            fecha_inicio = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        fecha      = _parse_fecha(texto_fecha)
+        hora_pedida = _parse_hora(texto_fecha)
 
-        service  = _build_calendar_service()
-        time_min = fecha_inicio
-        time_max = fecha_inicio + timedelta(days=dias)
+        if fecha is None:
+            return "No entendí la fecha. ¿Podés decirme el día?"
 
-        busy_raw = service.freebusy().query(body={
-            'timeMin':  time_min.isoformat(),
+        fecha_inicio = datetime(fecha.year, fecha.month, fecha.day,
+                                HORA_APERTURA, 0, tzinfo=TIMEZONE)
+        time_max = fecha_inicio + timedelta(days=max(dias, 1))
+
+        busy_raw = _build_calendar_service().freebusy().query(body={
+            'timeMin':  fecha_inicio.isoformat(),
             'timeMax':  time_max.isoformat(),
             'timeZone': str(TIMEZONE),
-            'items':    [{'id': calendar_id}]
+            'items':    [{'id': calendar_id}],
         }).execute()['calendars'][calendar_id]['busy']
 
-        busy_ranges = []
-        for item in busy_raw:
-            s = datetime.fromisoformat(item['start'].replace('Z', '+00:00')).astimezone(TIMEZONE)
-            e = datetime.fromisoformat(item['end'].replace('Z', '+00:00')).astimezone(TIMEZONE)
-            busy_ranges.append((s, e))
+        busy_ranges = [
+            (
+                datetime.fromisoformat(b['start'].replace('Z', '+00:00')).astimezone(TIMEZONE),
+                datetime.fromisoformat(b['end'].replace('Z', '+00:00')).astimezone(TIMEZONE),
+            )
+            for b in busy_raw
+        ]
 
-        # Generar slots disponibles de 1 hora entre 9 y 18
-        # IMPORTANTE: el cursor avanza de 1 HORA en 1 HORA (no de 30 min)
-        # para que cada slot mostrado sea exactamente el bloque que se va a reservar.
-        slots = []
-        for day_offset in range(dias):
-            day = fecha_inicio + timedelta(days=day_offset)
-            cursor = day.replace(hour=9, minute=0)
-            end_of_day = day.replace(hour=18, minute=0)
-            while cursor + timedelta(hours=1) <= end_of_day and len(slots) < 6:
-                cend    = cursor + timedelta(hours=1)
-                overlap = any(not (cend <= bs or cursor >= be) for bs, be in busy_ranges)
-                if not overlap:
-                    slots.append(cursor)
-                cursor += timedelta(hours=1)  # avance de 1h, no de 30 min
+        slots = _slots_disponibles(fecha_inicio, time_max, busy_ranges, hora_pedida)
 
         if not slots:
-            return f"No hay turnos disponibles en los próximos {dias} días desde {texto_fecha}. ¿Querés que busque en otra fecha?"
+            return (f"No hay disponibilidad el {fecha.strftime('%d/%m')}. "
+                    f"¿Querés que busque en otra fecha?")
 
-        lineas = []
-        for slot in slots[:4]:
-            label = slot.strftime('%A %d/%m a las %H:%M').capitalize()
-            iso   = slot.isoformat()          # ej: 2025-05-16T15:00:00-03:00
-            lineas.append(f"- {label} [ISO:{iso}]")
+        lineas = [
+            f"- {s.strftime('%A %d/%m a las %H:%M').capitalize()} [ISO:{s.isoformat()}]"
+            for s in slots
+        ]
         return "Turnos disponibles:\n" + "\n".join(lineas)
 
     except Exception as e:
@@ -232,6 +288,8 @@ def _consultar_calendar(texto_fecha: str, dias: int = 3, calendar_id: str = None
 def _is_busy(service, start: datetime, end: datetime, calendar_id: str = None) -> bool:
     if not calendar_id:
         calendar_id = os.getenv("CALENDAR_ID", "primary")
+    if _bloqueado_por_regla_horaria(start, end):
+        return True
     busy = service.freebusy().query(body={
         'timeMin':  start.isoformat(),
         'timeMax':  end.isoformat(),
