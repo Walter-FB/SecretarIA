@@ -27,14 +27,17 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
 
     logging.warning(f"[TOOL iniciar_agendamiento] {cliente.telefono} | {especialidad} | {cobertura} | prof={profesional}")
 
-    # Actualizar profesional del cliente al indicado (siempre, no solo si no tenía uno)
+    # Actualizar profesional del cliente: por nombre si se pasó, o por especialidad como fallback
+    from services.profesionales import get_profesional_by_nombre, get_profesional_by_especialidad, _normalizar_especialidad
+    prof_obj = None
     if profesional:
-        from services.profesionales import get_profesional_by_nombre
         prof_obj = get_profesional_by_nombre(session, profesional, empresa_id)
-        if prof_obj:
-            cliente.profesional_id = prof_obj.id
-            session.commit()
-            logging.warning(f"[TOOL iniciar_agendamiento] Profesional actualizado: {prof_obj.nombre}")
+    if not prof_obj and especialidad:
+        prof_obj = get_profesional_by_especialidad(session, _normalizar_especialidad(especialidad), empresa_id)
+    if prof_obj:
+        cliente.profesional_id = prof_obj.id
+        session.commit()
+        logging.warning(f"[TOOL iniciar_agendamiento] Profesional actualizado: {prof_obj.nombre}")
 
     from agents.herramientas_secretarias import enviar_mensaje_wpp
     await enviar_mensaje_wpp(
