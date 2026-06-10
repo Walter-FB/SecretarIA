@@ -73,6 +73,9 @@ def get_clientes(empresa_id: str):
                 .order_by(Mensaje.fecha_creacion.desc())
                 .first()
             )
+            prof = None
+            if c.profesional_id:
+                prof = db.query(Profesional).filter(Profesional.id == c.profesional_id).first()
             result.append({
                 "id":               c.id,
                 "telefono":         c.telefono,
@@ -81,6 +84,7 @@ def get_clientes(empresa_id: str):
                 "bot_activo":       c.bot_activo,
                 "mensajes_enviados": c.mensajes_enviados,
                 "ultimo_mensaje":   ultimo.fecha_creacion.isoformat() if ultimo else None,
+                "profesional":      prof.nombre if prof else None,
             })
         return result
     finally:

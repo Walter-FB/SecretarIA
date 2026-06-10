@@ -469,6 +469,7 @@
                 <th>Teléfono</th>
                 <th>Nombre</th>
                 <th>Estado</th>
+                <th>Profesional</th>
                 <th title="Bot activo">Bot</th>
                 <th>Último msg</th>
                 <th>Acciones</th>
@@ -683,6 +684,7 @@
         <td><code style="font-size:.8rem;color:#475569">${esc(c.telefono)}</code></td>
         <td>${c.nombre ? esc(c.nombre) : '<em style="color:#cbd5e1">sin nombre</em>'}</td>
         <td>${badgeEstado(c.estado_agente)}</td>
+        <td style="font-size:.8rem;color:#475569">${c.profesional ? esc(c.profesional) : '<em style="color:#cbd5e1">—</em>'}</td>
         <td class="bot-icon">${muteado ? '🔇' : '🔊'}</td>
         <td style="color:#64748b;font-size:.79rem">${fmtDate(c.ultimo_mensaje)}</td>
         <td class="actions">
