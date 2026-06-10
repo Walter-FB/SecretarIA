@@ -14,9 +14,16 @@ import models  # noqa: F401 — necesario para que Base.metadata conozca las tab
 
 # En local (SQLite) creamos las tablas directo porque SQLite no soporta
 # todas las operaciones de Alembic (FKs en ALTER TABLE, etc.).
-# En Railway (PostgreSQL) el releaseCommand "alembic upgrade head" lo maneja todo.
+# En Railway (PostgreSQL) corremos alembic upgrade head al arrancar para garantizar
+# que las migraciones siempre se apliquen incluso si el releaseCommand falla.
 if engine.dialect.name == "sqlite":
     Base.metadata.create_all(bind=engine)
+else:
+    import subprocess
+    result = subprocess.run(["python", "-m", "alembic", "upgrade", "head"], capture_output=True, text=True)
+    print("[ALEMBIC]", result.stdout.strip() or "(sin output)")
+    if result.returncode != 0:
+        print("[ALEMBIC ERROR]", result.stderr.strip())
 
 # Asegurarse de que exista la empresa por defecto
 from init_db import seed_empresa_default, seed_profesionales, seed_abriness_multitenant
