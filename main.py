@@ -19,11 +19,19 @@ import models  # noqa: F401 — necesario para que Base.metadata conozca las tab
 if engine.dialect.name == "sqlite":
     Base.metadata.create_all(bind=engine)
 else:
-    import subprocess
-    result = subprocess.run(["python", "-m", "alembic", "upgrade", "head"], capture_output=True, text=True)
-    print("[ALEMBIC]", result.stdout.strip() or "(sin output)")
-    if result.returncode != 0:
-        print("[ALEMBIC ERROR]", result.stderr.strip())
+    # En PostgreSQL aplicamos columnas faltantes directamente para no depender
+    # del estado de alembic_version (que en Railway puede estar desincronizado).
+    from sqlalchemy import text, inspect as sa_inspect
+    with engine.begin() as conn:
+        inspector = sa_inspect(engine)
+
+        # agente en mensajes
+        cols_mensajes = [c["name"] for c in inspector.get_columns("mensajes")]
+        if "agente" not in cols_mensajes:
+            conn.execute(text("ALTER TABLE mensajes ADD COLUMN agente VARCHAR"))
+            print("[STARTUP] Columna 'agente' agregada a mensajes ✓")
+        else:
+            print("[STARTUP] Columna 'agente' ya existe ✓")
 
 # Asegurarse de que exista la empresa por defecto
 from init_db import seed_empresa_default, seed_profesionales, seed_abriness_multitenant
