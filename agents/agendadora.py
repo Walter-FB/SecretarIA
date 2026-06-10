@@ -41,7 +41,7 @@ Cálido, eficiente, al grano. Usás "vos". Una pregunta por mensaje. Sin emojis 
 Tu trabajo termina cuando llamás iniciar_cobranzas.
 6. Si consultar_calendar responde que el horario está DISPONIBLE, asumí que es válido y avanzá directamente a confirmar e iniciar cobranzas.
    Si responde OCUPADO, ofrecé las alternativas que la herramienta devolvió.
-7. IMPORTANTE: cuando el paciente pide un horario específico distinto al que ya consultaste (ej: "y a las 13?", "podría ser 18hs?"), SIEMPRE volvé a llamar consultar_calendar con ese horario exacto. Nunca deduzcas disponibilidad a partir de una consulta anterior — cada horario se verifica por separado.
+7. La herramienta te devuelve TODOS los slots verificados del día con sus ISO. Al presentarle opciones al paciente, mostrá máximo 5. Pero si el paciente pide un horario que ya está en esa lista, confirmalo directamente sin volver a consultar. Solo volvé a consultar si el paciente pide un horario que NO estaba en el resultado anterior.
 </TU_TRABAJO>
 
 <DERIVACIONES>
@@ -202,10 +202,11 @@ def _slots_disponibles(
     Devuelve hasta 4 slots libres de 1h entre HORA_APERTURA y HORA_CIERRE.
     El primer día arranca desde hora_pedida si se especificó; días siguientes desde HORA_APERTURA.
     """
+    MAX_SLOTS = 12
     slots  = []
     cursor = desde
 
-    while cursor < hasta and len(slots) < 4:
+    while cursor < hasta and len(slots) < MAX_SLOTS:
         dia      = cursor.date()
         apertura = cursor.replace(hour=HORA_APERTURA, minute=0, second=0, microsecond=0)
         cierre   = cursor.replace(hour=HORA_CIERRE,   minute=0, second=0, microsecond=0)
@@ -215,7 +216,7 @@ def _slots_disponibles(
             apertura = apertura.replace(hour=h)
 
         slot = apertura
-        while slot + timedelta(hours=1) <= cierre and len(slots) < 4:
+        while slot + timedelta(hours=1) <= cierre and len(slots) < MAX_SLOTS:
             fin   = slot + timedelta(hours=1)
             libre = (
                 not _bloqueado_por_regla_horaria(slot, fin)
@@ -276,12 +277,12 @@ def _consultar_calendar_local(texto_fecha: str, dias: int = 1, profesional_id: s
         label = start.strftime('%A %d/%m a las %H:%M').capitalize()
         if libre:
             return f"El horario solicitado está DISPONIBLE.\n- {label} [ISO:{start.isoformat()}]"
-        alternativas = _slots_disponibles(fecha_inicio, time_max, busy_ranges, None)[:3]
+        alternativas = _slots_disponibles(fecha_inicio, time_max, busy_ranges, None)
         if not alternativas:
             return (f"El horario solicitado está OCUPADO y no hay más disponibilidad el "
                     f"{fecha.strftime('%d/%m')}. ¿Querés otro día?")
         lineas = [f"- {s.strftime('%A %d/%m a las %H:%M').capitalize()} [ISO:{s.isoformat()}]" for s in alternativas]
-        return "El horario solicitado está OCUPADO. Alternativas:\n" + "\n".join(lineas)
+        return "El horario solicitado está OCUPADO. Alternativas disponibles:\n" + "\n".join(lineas)
 
     slots = _slots_disponibles(fecha_inicio, time_max, busy_ranges, hora_pedida)
     if not slots:
@@ -331,13 +332,13 @@ def _consultar_calendar(texto_fecha: str, dias: int = 1, calendar_id: str = None
             label = start.strftime('%A %d/%m a las %H:%M').capitalize()
             if libre:
                 return f"El horario solicitado está DISPONIBLE.\n- {label} [ISO:{start.isoformat()}]"
-            alternativas = _slots_disponibles(fecha_inicio, time_max, busy_ranges, None)[:3]
+            alternativas = _slots_disponibles(fecha_inicio, time_max, busy_ranges, None)
             if not alternativas:
                 return (f"El horario solicitado está OCUPADO y no hay más disponibilidad el "
                         f"{fecha.strftime('%d/%m')}. ¿Querés otro día?")
             lineas = [f"- {s.strftime('%A %d/%m a las %H:%M').capitalize()} [ISO:{s.isoformat()}]"
                       for s in alternativas]
-            return "El horario solicitado está OCUPADO. Alternativas:\n" + "\n".join(lineas)
+            return "El horario solicitado está OCUPADO. Alternativas disponibles:\n" + "\n".join(lineas)
 
         # Modo Amplio: sin hora, muestra primeros 4 slots disponibles
         slots = _slots_disponibles(fecha_inicio, time_max, busy_ranges, None)
