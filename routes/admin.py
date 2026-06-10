@@ -103,12 +103,17 @@ def get_conversacion(telefono: str, empresa_id: str):
             .order_by(Mensaje.fecha_creacion.asc())
             .all()
         )
+        prof = None
+        if cliente.profesional_id:
+            prof = db.query(Profesional).filter(Profesional.id == cliente.profesional_id).first()
+
         return {
             "telefono":     telefono,
             "nombre":       cliente.nombre_completo or "",
             "estado_agente": cliente.estado_agente,
             "bot_activo":   cliente.bot_activo,
             "obra_social":  cliente.obra_social or "",
+            "profesional":  prof.nombre if prof else None,
             "mensajes": [
                 {"rol": m.rol, "texto": m.texto, "fecha": m.fecha_creacion.isoformat()}
                 for m in mensajes

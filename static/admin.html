@@ -5,259 +5,567 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SecretarIA — Admin</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; color: #333; min-height: 100vh; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      background: #f0f2f5; color: #1e293b; min-height: 100vh;
+      font-size: 14px;
+    }
 
     /* ── Header ── */
     #header {
-      background: #1a1a2e; color: #fff;
-      padding: 12px 24px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+      background: #0f172a;
+      padding: 0 28px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.3);
+      position: sticky;
+      top: 0;
+      z-index: 100;
     }
-    #header h1 { font-size: 1rem; font-weight: 700; white-space: nowrap; }
+    #header-logo {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #e2e8f0;
+      white-space: nowrap;
+      letter-spacing: .3px;
+    }
+    #header-logo span { color: #e94560; }
     #token-input {
-      flex: 1; min-width: 180px; max-width: 360px;
-      padding: 7px 11px; border: none; border-radius: 5px;
-      font-size: 0.85rem; background: #2d2d44; color: #fff;
+      flex: 1;
+      max-width: 320px;
+      padding: 7px 12px;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      font-size: 0.83rem;
+      background: #1e293b;
+      color: #e2e8f0;
+      outline: none;
+      transition: border-color .15s;
     }
-    #token-input::placeholder { color: #888; }
+    #token-input:focus { border-color: #e94560; }
+    #token-input::placeholder { color: #64748b; }
     #btn-connect {
-      padding: 7px 18px; background: #e94560; border: none; color: #fff;
-      border-radius: 5px; cursor: pointer; font-size: 0.85rem; font-weight: 600;
+      padding: 7px 20px;
+      background: #e94560;
+      border: none;
+      color: #fff;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.83rem;
+      font-weight: 600;
+      transition: background .15s;
+      white-space: nowrap;
     }
     #btn-connect:hover { background: #c73a52; }
-    #status { font-size: 0.78rem; }
-    #status.ok  { color: #4caf50; }
-    #status.err { color: #f44336; }
-
-    /* ── Main layout ── */
-    #main { display: none; padding: 20px 24px; }
-    #controls { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
-    select {
-      padding: 7px 11px; border: 1px solid #ccc; border-radius: 5px;
-      font-size: 0.85rem; min-width: 220px; background: #fff;
+    #status {
+      font-size: 0.77rem;
+      font-weight: 500;
+      padding: 4px 10px;
+      border-radius: 20px;
+      white-space: nowrap;
     }
-    .btn {
-      padding: 7px 14px; border: 1px solid #ccc; border-radius: 5px;
-      cursor: pointer; font-size: 0.83rem; background: #fff;
-    }
-    .btn:hover { background: #f0f0f0; }
-    .btn-primary { background: #1a1a2e; color: #fff; border-color: #1a1a2e; }
-    .btn-primary:hover { background: #0f3460; border-color: #0f3460; }
-    .btn-sm { font-size: 0.75rem; padding: 4px 10px; }
-    .btn-mute   { background: #fff3cd; border-color: #ffc107; color: #664d03; }
-    .btn-mute:hover { background: #ffe69c; }
-    .btn-unmute { background: #d1e7dd; border-color: #0f5132; color: #0f5132; }
-    .btn-unmute:hover { background: #badbcc; }
+    #status.ok  { background: #14532d22; color: #4ade80; }
+    #status.err { background: #7f1d1d22; color: #f87171; }
 
-    /* ── Content split ── */
-    #content-area { display: flex; gap: 20px; align-items: flex-start; }
-    #table-section { flex: 1; min-width: 0; }
+    /* ── Nav tabs ── */
+    #nav-bar {
+      display: none;
+      background: #fff;
+      border-bottom: 1px solid #e2e8f0;
+      padding: 0 28px;
+      gap: 0;
+      align-items: stretch;
+    }
+    #nav-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 0;
+      flex: 1;
+    }
+    #empresa-select {
+      padding: 7px 11px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      font-size: 0.83rem;
+      min-width: 220px;
+      background: #fff;
+      color: #1e293b;
+      cursor: pointer;
+      outline: none;
+    }
+    #btn-refresh {
+      padding: 7px 13px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      background: #fff;
+      color: #475569;
+      cursor: pointer;
+      font-size: 0.83rem;
+      transition: all .15s;
+    }
+    #btn-refresh:hover { background: #f8fafc; border-color: #94a3b8; }
+    #tab-group {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      margin-left: auto;
+    }
+    .tab-btn {
+      padding: 0 20px;
+      height: 100%;
+      border: none;
+      background: none;
+      cursor: pointer;
+      font-size: 0.84rem;
+      font-weight: 500;
+      color: #64748b;
+      border-bottom: 2px solid transparent;
+      transition: color .15s, border-color .15s;
+      white-space: nowrap;
+    }
+    .tab-btn:hover { color: #1e293b; }
+    .tab-btn.active { color: #0f172a; border-bottom-color: #e94560; font-weight: 600; }
+
+    /* ── Views ── */
+    #main { display: none; }
+
+    .view { display: none; padding: 24px 28px; }
+    .view.active { display: block; }
+
+    /* ── Clientes view ── */
+    #view-clientes .layout {
+      display: flex;
+      gap: 20px;
+      align-items: flex-start;
+    }
+    #view-clientes .table-wrap { flex: 1; min-width: 0; }
+
+    /* ── Card ── */
+    .card {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,.05);
+    }
+    .card-header {
+      padding: 12px 16px;
+      background: #f8fafc;
+      border-bottom: 1px solid #e2e8f0;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #475569;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
 
     /* ── Table ── */
-    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; border: 1px solid #ddd; overflow: hidden; }
+    table { width: 100%; border-collapse: collapse; }
     thead th {
-      background: #1a1a2e; color: #fff; padding: 10px 12px;
-      text-align: left; font-size: 0.82rem; font-weight: 600; white-space: nowrap;
+      background: #0f172a;
+      color: #cbd5e1;
+      padding: 10px 14px;
+      text-align: left;
+      font-size: 0.77rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      white-space: nowrap;
     }
-    tbody td { padding: 9px 12px; border-bottom: 1px solid #f0f0f0; font-size: 0.83rem; vertical-align: middle; }
+    tbody td {
+      padding: 10px 14px;
+      border-bottom: 1px solid #f1f5f9;
+      font-size: 0.83rem;
+      vertical-align: middle;
+      color: #334155;
+    }
     tbody tr:last-child td { border-bottom: none; }
-    tbody tr:hover { background: #f8f9fb; }
-    tbody tr.selected { background: #eef2ff; }
+    tbody tr:hover { background: #f8fafc; }
+    tbody tr.selected { background: #eff6ff; }
 
-    .badge {
-      display: inline-block; padding: 2px 9px; border-radius: 20px;
-      font-size: 0.72rem; font-weight: 700; white-space: nowrap;
+    #placeholder {
+      text-align: center;
+      padding: 52px 24px;
+      color: #94a3b8;
+      font-size: 0.88rem;
     }
-    .badge-principal      { background: #cfe2ff; color: #0d47a1; }
-    .badge-agendadora     { background: #d1e7dd; color: #0a3622; }
-    .badge-manual         { background: #f8d7da; color: #842029; }
-    .badge-esperando_mail { background: #fff3cd; color: #664d03; }
-    .badge-default        { background: #e2e3e5; color: #41464b; }
 
-    td.bot-icon { text-align: center; font-size: 1.1rem; }
+    /* ── Badges ── */
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .badge-principal      { background: #dbeafe; color: #1d4ed8; }
+    .badge-agendadora     { background: #dcfce7; color: #15803d; }
+    .badge-manual         { background: #fee2e2; color: #b91c1c; }
+    .badge-esperando_mail { background: #fef9c3; color: #a16207; }
+    .badge-default        { background: #f1f5f9; color: #64748b; }
+
+    td.bot-icon { text-align: center; font-size: 1rem; }
     td.actions  { white-space: nowrap; }
-    td.actions > * + * { margin-left: 6px; }
+    td.actions > * + * { margin-left: 5px; }
 
-    #placeholder { text-align: center; padding: 48px; color: #aaa; font-size: 0.9rem; }
+    /* ── Buttons ── */
+    .btn {
+      padding: 5px 13px;
+      border-radius: 6px;
+      border: 1px solid #cbd5e1;
+      cursor: pointer;
+      font-size: 0.79rem;
+      font-weight: 500;
+      background: #fff;
+      color: #334155;
+      transition: all .12s;
+    }
+    .btn:hover { background: #f8fafc; border-color: #94a3b8; }
+    .btn-dark   { background: #0f172a; color: #fff; border-color: #0f172a; }
+    .btn-dark:hover { background: #1e293b; }
+    .btn-mute   { background: #fef9c3; border-color: #ca8a04; color: #713f12; }
+    .btn-mute:hover { background: #fef08a; }
+    .btn-unmute { background: #dcfce7; border-color: #16a34a; color: #14532d; }
+    .btn-unmute:hover { background: #bbf7d0; }
 
     /* ── Conversation panel ── */
     #conv-panel {
-      width: 400px; flex-shrink: 0; background: #fff;
-      border: 1px solid #ddd; border-radius: 8px; overflow: hidden;
-      display: none; position: sticky; top: 20px; max-height: calc(100vh - 100px);
-      display: none; flex-direction: column;
+      width: 400px;
+      flex-shrink: 0;
+      border-radius: 10px;
+      border: 1px solid #e2e8f0;
+      overflow: hidden;
+      display: none;
+      flex-direction: column;
+      position: sticky;
+      top: 80px;
+      max-height: calc(100vh - 100px);
+      box-shadow: 0 4px 12px rgba(0,0,0,.08);
+      background: #fff;
     }
+    #conv-panel.open { display: flex; }
     #conv-header {
-      background: #1a1a2e; color: #fff; padding: 11px 14px;
-      display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
     }
-    #conv-header h2 { font-size: 0.9rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #btn-close { background: none; border: none; color: #ccc; font-size: 1.3rem; cursor: pointer; line-height: 1; flex-shrink: 0; }
-    #btn-close:hover { color: #fff; }
+    #conv-header h2 {
+      font-size: 0.88rem;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #btn-close {
+      background: none;
+      border: none;
+      color: #94a3b8;
+      font-size: 1.3rem;
+      cursor: pointer;
+      line-height: 1;
+      flex-shrink: 0;
+      transition: color .12s;
+    }
+    #btn-close:hover { color: #e2e8f0; }
     #conv-meta {
-      padding: 9px 14px; background: #f8f9fa; border-bottom: 1px solid #eee;
-      font-size: 0.78rem; color: #555; display: flex; flex-wrap: wrap; gap: 10px; flex-shrink: 0;
+      padding: 8px 14px;
+      background: #f8fafc;
+      border-bottom: 1px solid #f1f5f9;
+      font-size: 0.77rem;
+      color: #64748b;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      flex-shrink: 0;
     }
-    #conv-meta strong { color: #333; }
+    #conv-meta strong { color: #334155; }
     #conv-messages {
-      flex: 1; overflow-y: auto; padding: 14px; display: flex;
-      flex-direction: column; gap: 8px;
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      background: #f8fafc;
     }
-
-    .msg { max-width: 82%; padding: 8px 11px; border-radius: 14px; font-size: 0.82rem; line-height: 1.45; word-break: break-word; }
-    .msg.usuario    { align-self: flex-end; background: #dcf8c6; border-bottom-right-radius: 3px; }
-    .msg.asistente  { align-self: flex-start; background: #fff; border: 1px solid #e5e5e5; border-bottom-left-radius: 3px; }
-    .msg-time { font-size: 0.67rem; color: #aaa; margin-top: 3px; text-align: right; }
+    .msg {
+      max-width: 82%;
+      padding: 8px 11px;
+      border-radius: 14px;
+      font-size: 0.81rem;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+    .msg.usuario   { align-self: flex-end; background: #dcf8c6; border-bottom-right-radius: 3px; }
+    .msg.asistente { align-self: flex-start; background: #fff; border: 1px solid #e2e8f0; border-bottom-left-radius: 3px; }
+    .msg-time { font-size: 0.66rem; color: #94a3b8; margin-top: 3px; text-align: right; }
     .msg.asistente .msg-time { text-align: left; }
-    #conv-empty { text-align: center; color: #aaa; padding: 24px; font-size: 0.85rem; }
 
-    /* ── Footer de mensajes ── */
     #conv-footer {
-      border-top: 1px solid #eee; padding: 10px 12px;
-      display: flex; flex-direction: column; gap: 6px; flex-shrink: 0;
-      background: #fafafa;
+      border-top: 1px solid #e2e8f0;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex-shrink: 0;
+      background: #fff;
     }
     #conv-footer.blocked { background: #fff8f8; }
     #send-blocked-msg {
-      font-size: 0.74rem; color: #c0392b; text-align: center;
+      font-size: 0.73rem;
+      color: #b91c1c;
+      text-align: center;
       display: none;
     }
     #conv-footer.blocked #send-blocked-msg { display: block; }
     #send-row { display: flex; gap: 8px; }
     #msg-input {
-      flex: 1; padding: 7px 10px; border: 1px solid #ccc; border-radius: 8px;
-      font-size: 0.84rem; resize: none; font-family: inherit; line-height: 1.4;
+      flex: 1;
+      padding: 7px 10px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      font-size: 0.83rem;
+      resize: none;
+      font-family: inherit;
+      line-height: 1.4;
+      outline: none;
+      transition: border-color .15s;
     }
-    #msg-input:disabled { background: #f0f0f0; color: #aaa; cursor: not-allowed; }
+    #msg-input:focus { border-color: #0f172a; }
+    #msg-input:disabled { background: #f1f5f9; color: #94a3b8; cursor: not-allowed; }
     #btn-send {
-      padding: 7px 16px; background: #1a1a2e; color: #fff; border: none;
-      border-radius: 8px; cursor: pointer; font-size: 0.84rem; white-space: nowrap;
+      padding: 7px 16px;
+      background: #0f172a;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.83rem;
+      font-weight: 600;
+      white-space: nowrap;
+      transition: background .12s;
     }
-    #btn-send:disabled { background: #aaa; cursor: not-allowed; }
-    #btn-send:not(:disabled):hover { background: #0f3460; }
+    #btn-send:disabled { background: #94a3b8; cursor: not-allowed; }
+    #btn-send:not(:disabled):hover { background: #1e293b; }
 
-    /* ── Profesionales ── */
-    #prof-section { margin-top: 28px; }
-    #prof-section h2 { font-size: 0.95rem; font-weight: 700; margin-bottom: 12px; color: #1a1a2e; }
-    #prof-form {
-      background: #fff; border: 1px solid #ddd; border-radius: 8px;
-      padding: 16px; margin-top: 14px;
+    /* ── Profesionales view ── */
+    #view-profesionales .two-col {
+      display: flex;
+      gap: 20px;
+      align-items: flex-start;
     }
-    #prof-form h3 { font-size: 0.85rem; font-weight: 700; margin-bottom: 12px; color: #1a1a2e; }
-    .prof-form-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
-    .prof-field label { font-size: 0.78rem; display: block; margin-bottom: 3px; color: #555; }
-    .prof-field input, .prof-field select {
-      padding: 6px 9px; border: 1px solid #ccc; border-radius: 5px;
-      font-size: 0.83rem; font-family: inherit;
+    #view-profesionales .prof-table-wrap { flex: 1; min-width: 0; }
+    #view-profesionales .prof-form-wrap  { width: 300px; flex-shrink: 0; }
+
+    .form-group { margin-bottom: 13px; }
+    .form-group label {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: #475569;
+      margin-bottom: 4px;
     }
-    #prof-form-status { font-size: 0.78rem; margin-top: 8px; }
+    .form-group input,
+    .form-group select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      font-size: 0.83rem;
+      font-family: inherit;
+      background: #fff;
+      color: #1e293b;
+      outline: none;
+      transition: border-color .15s;
+    }
+    .form-group input:focus,
+    .form-group select:focus { border-color: #0f172a; }
+    .form-hint {
+      font-size: 0.72rem;
+      color: #94a3b8;
+      margin-top: 3px;
+    }
+    #btn-add-prof {
+      width: 100%;
+      padding: 9px;
+      background: #0f172a;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .12s;
+    }
+    #btn-add-prof:hover { background: #1e293b; }
+    #btn-add-prof:disabled { background: #94a3b8; cursor: not-allowed; }
+    #prof-form-status {
+      margin-top: 10px;
+      font-size: 0.78rem;
+      padding: 7px 10px;
+      border-radius: 5px;
+      display: none;
+    }
+    #prof-form-status.ok  { background: #dcfce7; color: #15803d; display: block; }
+    #prof-form-status.err { background: #fee2e2; color: #b91c1c; display: block; }
+
+    .motor-tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.73rem;
+      font-weight: 600;
+      font-family: monospace;
+    }
+    .motor-empresa { background: #dbeafe; color: #1d4ed8; }
+    .motor-local   { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+    .motor-custom  { background: #fef9c3; color: #a16207; }
   </style>
 </head>
 <body>
 
+<!-- ── Header ─────────────────────────────────────────────────────── -->
 <div id="header">
-  <h1>🤖 SecretarIA Admin</h1>
-  <input id="token-input" type="password" placeholder="Pegar ADMIN_TOKEN…" autocomplete="off" />
+  <div id="header-logo">Secretar<span>IA</span> Admin</div>
+  <input id="token-input" type="password" placeholder="ADMIN_TOKEN…" autocomplete="off" />
   <button id="btn-connect">Conectar</button>
   <span id="status"></span>
 </div>
 
-<div id="main">
-  <div id="controls">
+<!-- ── Nav bar ────────────────────────────────────────────────────── -->
+<div id="nav-bar">
+  <div id="nav-controls">
     <select id="empresa-select"><option value="">— Empresa —</option></select>
-    <button class="btn btn-primary btn-sm" id="btn-refresh">🔄 Actualizar</button>
+    <button id="btn-refresh">↺ Actualizar</button>
   </div>
-
-  <div id="content-area">
-    <div id="table-section">
-      <div id="placeholder">Seleccioná una empresa para ver los clientes.</div>
-      <table id="clients-table" style="display:none">
-        <thead>
-          <tr>
-            <th>Teléfono</th>
-            <th>Nombre</th>
-            <th>Estado</th>
-            <th title="Bot activo">Bot</th>
-            <th>Último msg</th>
-            <th>Acciones</th>
-          </tr>
-        </thead>
-        <tbody id="clients-tbody"></tbody>
-      </table>
-    </div>
-
-    <!-- ── Profesionales ── -->
-    <div id="prof-section" style="display:none">
-      <h2>Profesionales</h2>
-      <table id="prof-table">
-        <thead>
-          <tr>
-            <th>Nombre</th>
-            <th>Especialidad</th>
-            <th>Particular</th>
-            <th>Obra Social</th>
-            <th title="calendar_id: 'empresa'=Calendar de la empresa, null=motor local, ID=Calendar propio">Motor</th>
-            <th>Activo</th>
-          </tr>
-        </thead>
-        <tbody id="prof-tbody"></tbody>
-      </table>
-      <div id="prof-form">
-        <h3>Agregar profesional</h3>
-        <div class="prof-form-row">
-          <div class="prof-field">
-            <label>Nombre</label>
-            <input id="prof-nombre" type="text" placeholder="Lic. Apellido" style="width:160px" />
-          </div>
-          <div class="prof-field">
-            <label>Especialidad</label>
-            <select id="prof-especialidad">
-              <option value="psicologo">Psicólogo/a</option>
-              <option value="psiquiatra">Psiquiatra</option>
-              <option value="otro">Otro</option>
-            </select>
-          </div>
-          <div class="prof-field">
-            <label>Particular ($)</label>
-            <input id="prof-particular" type="number" placeholder="30000" style="width:110px" />
-          </div>
-          <div class="prof-field">
-            <label>Obra Social ($)</label>
-            <input id="prof-os" type="number" placeholder="19000" style="width:110px" />
-          </div>
-          <div class="prof-field">
-            <label title="'empresa'=Calendar de empresa, vacío=motor local">Calendar ID</label>
-            <input id="prof-calendar" type="text" placeholder="empresa (Calendar) o vacío (local)" style="width:220px" />
-          </div>
-          <button id="btn-add-prof" class="btn btn-primary btn-sm">Agregar</button>
-        </div>
-        <p id="prof-form-status" style="display:none"></p>
-      </div>
-    </div>
-
-    <div id="conv-panel">
-      <div id="conv-header">
-        <h2 id="conv-title">Conversación</h2>
-        <button id="btn-close">×</button>
-      </div>
-      <div id="conv-meta"></div>
-      <div id="conv-messages"></div>
-      <div id="conv-footer">
-        <div id="send-blocked-msg">🔒 Ventana cerrada — el cliente no escribió en las últimas 20h.</div>
-        <div id="send-row">
-          <textarea id="msg-input" rows="2" placeholder="Escribí un mensaje…"></textarea>
-          <button id="btn-send">Enviar</button>
-        </div>
-      </div>
-    </div>
+  <div id="tab-group">
+    <button class="tab-btn active" data-tab="clientes">Clientes</button>
+    <button class="tab-btn" data-tab="profesionales">Profesionales</button>
   </div>
 </div>
 
+<!-- ── Main ──────────────────────────────────────────────────────── -->
+<div id="main">
+
+  <!-- Clientes -->
+  <div id="view-clientes" class="view active">
+    <div class="layout">
+      <div class="table-wrap">
+        <div id="placeholder">Seleccioná una empresa para ver los clientes.</div>
+        <div class="card" id="clients-card" style="display:none">
+          <table id="clients-table">
+            <thead>
+              <tr>
+                <th>Teléfono</th>
+                <th>Nombre</th>
+                <th>Estado</th>
+                <th title="Bot activo">Bot</th>
+                <th>Último msg</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="clients-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Conversation panel -->
+      <div id="conv-panel">
+        <div id="conv-header">
+          <h2 id="conv-title">Conversación</h2>
+          <button id="btn-close">×</button>
+        </div>
+        <div id="conv-meta"></div>
+        <div id="conv-messages"></div>
+        <div id="conv-footer">
+          <div id="send-blocked-msg">🔒 Ventana cerrada — el cliente no escribió en las últimas 20h.</div>
+          <div id="send-row">
+            <textarea id="msg-input" rows="2" placeholder="Escribí un mensaje…"></textarea>
+            <button id="btn-send">Enviar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Profesionales -->
+  <div id="view-profesionales" class="view">
+    <div class="two-col">
+      <div class="prof-table-wrap">
+        <div class="card">
+          <div class="card-header">Profesionales activos</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Especialidad</th>
+                <th>Particular</th>
+                <th>Obra social</th>
+                <th>Motor</th>
+                <th style="text-align:center">Activo</th>
+              </tr>
+            </thead>
+            <tbody id="prof-tbody">
+              <tr><td colspan="6" style="padding:20px;color:#94a3b8;text-align:center">Seleccioná una empresa primero.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="prof-form-wrap">
+        <div class="card">
+          <div class="card-header">Agregar profesional</div>
+          <div style="padding:16px">
+            <div class="form-group">
+              <label>Nombre</label>
+              <input id="prof-nombre" type="text" placeholder="Lic. Apellido" />
+            </div>
+            <div class="form-group">
+              <label>Especialidad</label>
+              <select id="prof-especialidad">
+                <option value="psicologo">Psicólogo/a</option>
+                <option value="psiquiatra">Psiquiatra</option>
+                <option value="otro">Otro</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Tarifa particular ($)</label>
+              <input id="prof-particular" type="number" placeholder="30000" />
+            </div>
+            <div class="form-group">
+              <label>Tarifa obra social ($)</label>
+              <input id="prof-os" type="number" placeholder="19000" />
+            </div>
+            <div class="form-group">
+              <label>Motor / Calendar ID</label>
+              <input id="prof-calendar" type="text" placeholder="empresa" />
+              <div class="form-hint">«empresa» = Google Calendar · vacío = motor local (BD)</div>
+            </div>
+            <button id="btn-add-prof">Agregar profesional</button>
+            <div id="prof-form-status"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
 <script>
-  let adminToken     = null;
-  let currentEmpId   = null;
-  let currentTel     = null;
-  let clientesData   = [];
+  let adminToken   = null;
+  let currentEmpId = null;
+  let currentTel   = null;
+  let clientesData = [];
 
   const $  = id => document.getElementById(id);
   const esc = s => String(s ?? '')
@@ -282,6 +590,14 @@
     return `<span class="badge ${cls}">${esc(e)}</span>`;
   }
 
+  function motorTag(calId) {
+    if (calId === null || calId === undefined || calId === 'null (local)')
+      return '<span class="motor-tag motor-local">local (BD)</span>';
+    if (calId === 'empresa')
+      return '<span class="motor-tag motor-empresa">empresa</span>';
+    return `<span class="motor-tag motor-custom" title="${esc(calId)}">ID propio</span>`;
+  }
+
   async function apiFetch(method, path, body) {
     const opts = {
       method,
@@ -296,7 +612,18 @@
     return res.json();
   }
 
-  // ── Conectar ────────────────────────────────────────────────────────
+  // ── Tabs ──────────────────────────────────────────────────────────
+  function setTab(name) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+    document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${name}`));
+    if (name === 'profesionales' && currentEmpId) cargarProfesionales(currentEmpId);
+  }
+
+  document.querySelectorAll('.tab-btn').forEach(b =>
+    b.addEventListener('click', () => setTab(b.dataset.tab))
+  );
+
+  // ── Conectar ──────────────────────────────────────────────────────
   async function conectar() {
     const tok = $('token-input').value.trim();
     if (!tok) { setStatus('Pegá el token primero.', false); return; }
@@ -312,21 +639,21 @@
         opt.textContent = `${e.nombre}  (${e.cantidad_clientes} clientes)`;
         sel.appendChild(opt);
       });
+      $('nav-bar').style.display = 'flex';
       $('main').style.display = 'block';
-      setStatus(`✓ Conectado — ${empresas.length} empresa(s)`, true);
+      setStatus(`✓ Conectado (${empresas.length} empresa${empresas.length !== 1 ? 's' : ''})`, true);
     } catch (err) {
       adminToken = null;
       setStatus(`Error: ${err.message}`, false);
     }
   }
 
-  // ── Cargar clientes ─────────────────────────────────────────────────
+  // ── Cargar clientes ───────────────────────────────────────────────
   async function cargarClientes(empId) {
     currentEmpId = empId;
     currentTel   = null;
-    $('conv-panel').style.display = 'none';
-    cargarProfesionales(empId);
-    $('clients-table').style.display = 'none';
+    $('conv-panel').classList.remove('open');
+    $('clients-card').style.display = 'none';
     $('placeholder').textContent = 'Cargando…';
     $('placeholder').style.display = 'block';
     try {
@@ -338,7 +665,7 @@
         return;
       }
       renderTabla();
-      $('clients-table').style.display = 'table';
+      $('clients-card').style.display = 'block';
     } catch (err) {
       $('placeholder').textContent = `Error: ${err.message}`;
       $('placeholder').style.display = 'block';
@@ -353,16 +680,16 @@
       const tr = document.createElement('tr');
       if (c.telefono === currentTel) tr.classList.add('selected');
       tr.innerHTML = `
-        <td><code>${esc(c.telefono)}</code></td>
-        <td>${c.nombre ? esc(c.nombre) : '<em style="color:#bbb">sin nombre</em>'}</td>
+        <td><code style="font-size:.8rem;color:#475569">${esc(c.telefono)}</code></td>
+        <td>${c.nombre ? esc(c.nombre) : '<em style="color:#cbd5e1">sin nombre</em>'}</td>
         <td>${badgeEstado(c.estado_agente)}</td>
         <td class="bot-icon">${muteado ? '🔇' : '🔊'}</td>
-        <td>${fmtDate(c.ultimo_mensaje)}</td>
+        <td style="color:#64748b;font-size:.79rem">${fmtDate(c.ultimo_mensaje)}</td>
         <td class="actions">
-          <button class="btn btn-primary btn-sm" onclick="verConv('${esc(c.telefono)}')">Ver</button>
+          <button class="btn btn-dark" onclick="verConv('${esc(c.telefono)}')">Ver</button>
           ${muteado
-            ? `<button class="btn btn-unmute btn-sm" onclick="toggleMute('${esc(c.telefono)}',false)">Unmute</button>`
-            : `<button class="btn btn-mute btn-sm" onclick="toggleMute('${esc(c.telefono)}',true)">Mute</button>`
+            ? `<button class="btn btn-unmute" onclick="toggleMute('${esc(c.telefono)}',false)">Unmute</button>`
+            : `<button class="btn btn-mute" onclick="toggleMute('${esc(c.telefono)}',true)">Mute</button>`
           }
         </td>
       `;
@@ -370,81 +697,68 @@
     });
   }
 
-  // ── Mute / Unmute ───────────────────────────────────────────────────
+  // ── Mute / Unmute ─────────────────────────────────────────────────
   async function toggleMute(telefono, mute) {
     try {
-      await apiFetch('POST', mute ? '/admin/mute' : '/admin/unmute', {
-        telefono, empresa_id: currentEmpId,
-      });
+      await apiFetch('POST', mute ? '/admin/mute' : '/admin/unmute', { telefono, empresa_id: currentEmpId });
       const c = clientesData.find(x => x.telefono === telefono);
       if (c) c.bot_activo = !mute;
       renderTabla();
-      // Si el panel de conversación está abierto para ese cliente, actualizar badge
-      if (currentTel === telefono) actualizarMetaPanel(!mute);
+      if (currentTel === telefono) {
+        const span = $('conv-meta').querySelector('.bot-status');
+        if (span) span.textContent = !mute ? '🔊 Activo' : '🔇 Muteado';
+      }
     } catch (err) {
       alert(`Error: ${err.message}`);
     }
   }
 
-  function actualizarMetaPanel(botActivo) {
-    const span = $('conv-meta').querySelector('.bot-status');
-    if (span) span.textContent = botActivo ? '🔊 Activo' : '🔇 Muteado';
-  }
-
-  // ── Conversación ────────────────────────────────────────────────────
-  const VENTANA_MS = 20 * 60 * 60 * 1000; // 20 horas en milisegundos
+  // ── Conversación ──────────────────────────────────────────────────
+  const VENTANA_MS = 20 * 60 * 60 * 1000;
 
   async function verConv(telefono) {
     currentTel = telefono;
     renderTabla();
-    const panel = $('conv-panel');
-    panel.style.display = 'flex';
+    $('conv-panel').classList.add('open');
     $('conv-title').textContent  = 'Cargando…';
     $('conv-meta').innerHTML     = '';
-    $('conv-messages').innerHTML = '<div id="conv-empty">Cargando…</div>';
+    $('conv-messages').innerHTML = '<div style="text-align:center;padding:24px;color:#94a3b8;font-size:.83rem">Cargando…</div>';
     setInputHabilitado(false);
-
     try {
-      const d = await apiFetch('GET', `/admin/conversacion/${encodeURIComponent(telefono)}?empresa_id=${encodeURIComponent(currentEmpId)}`);
+      const d = await apiFetch('GET',
+        `/admin/conversacion/${encodeURIComponent(telefono)}?empresa_id=${encodeURIComponent(currentEmpId)}`);
       $('conv-title').textContent = d.nombre || telefono;
-
       const c = clientesData.find(x => x.telefono === telefono);
       const botActivo = c ? c.bot_activo : d.bot_activo;
       $('conv-meta').innerHTML = `
-        <span><strong>Tel:</strong> ${esc(telefono)}</span>
-        <span>${badgeEstado(d.estado_agente)}</span>
-        ${d.obra_social ? `<span><strong>OS:</strong> ${esc(d.obra_social)}</span>` : ''}
+        <strong>${esc(telefono)}</strong>
+        ${badgeEstado(d.estado_agente)}
+        ${d.obra_social ? `<span>OS: <strong>${esc(d.obra_social)}</strong></span>` : ''}
+        ${d.profesional ? `<span>👨‍⚕️ <strong>${esc(d.profesional)}</strong></span>` : ''}
         <span class="bot-status">${botActivo ? '🔊 Activo' : '🔇 Muteado'}</span>
       `;
-
       const box = $('conv-messages');
       box.innerHTML = '';
       if (!d.mensajes.length) {
-        box.innerHTML = '<div id="conv-empty">Sin mensajes.</div>';
+        box.innerHTML = '<div style="text-align:center;padding:24px;color:#94a3b8">Sin mensajes.</div>';
         setInputHabilitado(false, true);
         return;
       }
-
       d.mensajes.forEach(m => {
         const div = document.createElement('div');
         div.className = `msg ${m.rol}`;
-        div.innerHTML = `${esc(m.texto).replace(/\n/g, '<br>')}<div class="msg-time">${fmtDate(m.fecha)}</div>`;
+        div.innerHTML = `${esc(m.texto).replace(/\n/g,'<br>')}
+          <div class="msg-time">${fmtDate(m.fecha)}</div>`;
         box.appendChild(div);
       });
       box.scrollTop = box.scrollHeight;
-
-      // Verificar ventana de 20h con el último mensaje del USUARIO
       const ultimoUsuario = [...d.mensajes].reverse().find(m => m.rol === 'usuario');
-      if (!ultimoUsuario) {
-        setInputHabilitado(false, true);
-        return;
-      }
+      if (!ultimoUsuario) { setInputHabilitado(false, true); return; }
       const hace = Date.now() - new Date(ultimoUsuario.fecha + (ultimoUsuario.fecha.endsWith('Z') ? '' : 'Z')).getTime();
       setInputHabilitado(hace < VENTANA_MS);
-
     } catch (err) {
       $('conv-title').textContent  = 'Error';
-      $('conv-messages').innerHTML = `<div style="color:#c00;padding:14px">${esc(err.message)}</div>`;
+      $('conv-messages').innerHTML = `<div style="color:#b91c1c;padding:14px;font-size:.83rem">${esc(err.message)}</div>`;
     }
   }
 
@@ -465,7 +779,7 @@
     }
   }
 
-  // ── Enviar mensaje ───────────────────────────────────────────────────
+  // ── Enviar mensaje ────────────────────────────────────────────────
   async function enviarMensaje() {
     const texto = $('msg-input').value.trim();
     if (!texto || !currentTel) return;
@@ -473,15 +787,13 @@
     $('btn-send').textContent = '…';
     try {
       await apiFetch('POST', '/admin/enviar', {
-        telefono:   currentTel,
-        empresa_id: currentEmpId,
-        mensaje:    texto,
+        telefono: currentTel, empresa_id: currentEmpId, mensaje: texto,
       });
-      // Agregar el mensaje al panel localmente
       const box = $('conv-messages');
       const div = document.createElement('div');
       div.className = 'msg asistente';
-      div.innerHTML = `${esc(texto).replace(/\n/g, '<br>')}<div class="msg-time">ahora</div>`;
+      div.innerHTML = `${esc(texto).replace(/\n/g,'<br>')}
+        <div class="msg-time">ahora</div>`;
       box.appendChild(div);
       box.scrollTop = box.scrollHeight;
       $('msg-input').value = '';
@@ -493,34 +805,36 @@
     }
   }
 
-  // ── Listeners ───────────────────────────────────────────────────────
-  // ── Profesionales ────────────────────────────────────────────────
+  // ── Profesionales ─────────────────────────────────────────────────
   async function cargarProfesionales(empId) {
-    const section = $('prof-section');
-    section.style.display = 'block';
-    $('prof-tbody').innerHTML = '<tr><td colspan="6" style="padding:12px;color:#aaa;font-size:0.83rem">Cargando...</td></tr>';
+    $('prof-tbody').innerHTML =
+      '<tr><td colspan="6" style="padding:20px;color:#94a3b8;text-align:center">Cargando…</td></tr>';
     try {
       const profs = await apiFetch('GET', `/admin/profesionales?empresa_id=${encodeURIComponent(empId)}`);
       renderProfesionales(profs);
     } catch (err) {
-      $('prof-tbody').innerHTML = `<tr><td colspan="6" style="padding:12px;color:#c00;font-size:0.83rem">${esc(err.message)}</td></tr>`;
+      $('prof-tbody').innerHTML =
+        `<tr><td colspan="6" style="padding:14px;color:#b91c1c;font-size:.83rem">${esc(err.message)}</td></tr>`;
     }
   }
 
   function renderProfesionales(profs) {
-    const tbody = $('prof-tbody');
     if (!profs.length) {
-      tbody.innerHTML = '<tr><td colspan="6" style="padding:12px;color:#aaa;font-size:0.83rem;text-align:center">Sin profesionales.</td></tr>';
+      $('prof-tbody').innerHTML =
+        '<tr><td colspan="6" style="padding:20px;color:#94a3b8;text-align:center">Sin profesionales.</td></tr>';
       return;
     }
-    tbody.innerHTML = profs.map(p => `
+    $('prof-tbody').innerHTML = profs.map(p => `
       <tr>
-        <td>${esc(p.nombre)}</td>
-        <td>${esc(p.especialidad)}</td>
+        <td style="font-weight:600;color:#1e293b">${esc(p.nombre)}</td>
+        <td style="color:#64748b;text-transform:capitalize">${esc(p.especialidad)}</td>
         <td>$${Number(p.tarifa_particular).toLocaleString('es-AR')}</td>
         <td>$${Number(p.tarifa_obra_social).toLocaleString('es-AR')}</td>
-        <td><code style="font-size:0.75rem;background:#f5f5f5;padding:2px 5px;border-radius:3px">${esc(p.calendar_id ?? 'null (local)')}</code></td>
-        <td style="text-align:center">${p.activo ? '✅' : '❌'}</td>
+        <td>${motorTag(p.calendar_id)}</td>
+        <td style="text-align:center">${p.activo
+          ? '<span style="color:#16a34a;font-weight:700">✓</span>'
+          : '<span style="color:#dc2626">✗</span>'
+        }</td>
       </tr>
     `).join('');
   }
@@ -534,10 +848,12 @@
     const calId        = calRaw === '' ? null : calRaw;
     const status       = $('prof-form-status');
 
+    status.className = '';
+    status.style.display = 'none';
+
     if (!nombre || isNaN(particular) || isNaN(os)) {
       status.textContent = 'Completá nombre y tarifas.';
-      status.style.color = '#c00';
-      status.style.display = 'block';
+      status.className = 'err';
       return;
     }
     $('btn-add-prof').disabled = true;
@@ -546,9 +862,8 @@
         empresa_id: currentEmpId, nombre, especialidad,
         tarifa_particular: particular, tarifa_obra_social: os, calendar_id: calId,
       });
-      status.textContent = `✓ ${nombre} agregado.`;
-      status.style.color = '#2e7d32';
-      status.style.display = 'block';
+      status.textContent = `✓ ${nombre} agregado correctamente.`;
+      status.className = 'ok';
       $('prof-nombre').value = '';
       $('prof-particular').value = '';
       $('prof-os').value = '';
@@ -556,27 +871,32 @@
       cargarProfesionales(currentEmpId);
     } catch (err) {
       status.textContent = `Error: ${err.message}`;
-      status.style.color = '#c00';
-      status.style.display = 'block';
+      status.className = 'err';
     } finally {
       $('btn-add-prof').disabled = false;
     }
   }
 
+  // ── Listeners ─────────────────────────────────────────────────────
   $('btn-connect').addEventListener('click', conectar);
   $('token-input').addEventListener('keydown', e => { if (e.key === 'Enter') conectar(); });
-  $('empresa-select').addEventListener('change', e => { if (e.target.value) cargarClientes(e.target.value); });
-  $('btn-refresh').addEventListener('click', () => { if (currentEmpId) cargarClientes(currentEmpId); });
+  $('empresa-select').addEventListener('change', e => {
+    if (e.target.value) cargarClientes(e.target.value);
+  });
+  $('btn-refresh').addEventListener('click', () => {
+    if (!currentEmpId) return;
+    const activeTab = document.querySelector('.tab-btn.active')?.dataset.tab;
+    if (activeTab === 'profesionales') cargarProfesionales(currentEmpId);
+    else cargarClientes(currentEmpId);
+  });
   $('btn-close').addEventListener('click', () => {
-    $('conv-panel').style.display = 'none';
+    $('conv-panel').classList.remove('open');
     currentTel = null;
     renderTabla();
   });
-
   $('btn-add-prof').addEventListener('click', agregarProfesional);
   $('btn-send').addEventListener('click', enviarMensaje);
   $('msg-input').addEventListener('keydown', e => {
-    // Ctrl+Enter o Cmd+Enter para enviar; Enter solo hace salto de línea
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       enviarMensaje();

@@ -75,10 +75,6 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     iso_dt      = tool_input.get("iso_datetime", "")
     TIMEZONE    = ZoneInfo('America/Argentina/Buenos_Aires')
 
-    calendar_id = (
-        empresa.calendar_id if empresa and empresa.calendar_id
-        else os.getenv("CALENDAR_ID", "primary")
-    )
     nombre_clinica = empresa.nombre if empresa else "Clínica"
     empresa_id     = empresa.id if empresa else None
 
@@ -102,11 +98,21 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     if not start or not end:
         return f"No pude interpretar la fecha '{dia} {hora}'. ¿Podés confirmar día y hora exactos?", None
 
-    # Determinar motor (local vs Calendar)
+    # Resolver el profesional del turno actual.
+    # Primero buscamos por nombre del tool input (fuente más precisa para este turno);
+    # solo si no se encuentra, usamos el profesional_id que ya tenía el cliente.
     from models import Profesional as ProfModel
+    from services.profesionales import get_profesional_by_nombre
     profesional_obj = None
-    if cliente and cliente.profesional_id:
+    if profesional:
+        profesional_obj = get_profesional_by_nombre(session, profesional, empresa_id)
+    if not profesional_obj and cliente and cliente.profesional_id:
         profesional_obj = session.query(ProfModel).filter(ProfModel.id == cliente.profesional_id).first()
+
+    # Actualizar profesional_id del cliente al recién confirmado (para sesiones futuras)
+    if profesional_obj and cliente and cliente.profesional_id != profesional_obj.id:
+        cliente.profesional_id = profesional_obj.id
+        session.commit()
 
     usar_local = bool(profesional_obj and profesional_obj.calendar_id is None)
 
@@ -140,6 +146,11 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
             return "Ese horario se acaba de ocupar. Voy a buscar otra alternativa.", None
     else:
         # Motor Calendar
+        if profesional_obj and profesional_obj.calendar_id and profesional_obj.calendar_id != "empresa":
+            calendar_id = profesional_obj.calendar_id
+        else:
+            calendar_id = (empresa.calendar_id if empresa and empresa.calendar_id
+                           else os.getenv("CALENDAR_ID", "primary"))
         try:
             service = _build_calendar_service()
             if _is_busy(service, start, end, calendar_id):

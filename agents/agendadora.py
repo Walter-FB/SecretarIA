@@ -41,6 +41,7 @@ Cálido, eficiente, al grano. Usás "vos". Una pregunta por mensaje. Sin emojis 
 Tu trabajo termina cuando llamás iniciar_cobranzas.
 6. Si consultar_calendar responde que el horario está DISPONIBLE, asumí que es válido y avanzá directamente a confirmar e iniciar cobranzas.
    Si responde OCUPADO, ofrecé las alternativas que la herramienta devolvió.
+7. IMPORTANTE: cuando el paciente pide un horario específico distinto al que ya consultaste (ej: "y a las 13?", "podría ser 18hs?"), SIEMPRE volvé a llamar consultar_calendar con ese horario exacto. Nunca deduzcas disponibilidad a partir de una consulta anterior — cada horario se verifica por separado.
 </TU_TRABAJO>
 
 <DERIVACIONES>
@@ -319,7 +320,27 @@ def _consultar_calendar(texto_fecha: str, dias: int = 1, calendar_id: str = None
             for b in busy_raw
         ]
 
-        slots = _slots_disponibles(fecha_inicio, time_max, busy_ranges, hora_pedida)
+        # Modo Preciso: el paciente pidió un horario específico
+        if hora_pedida is not None:
+            start = datetime(fecha.year, fecha.month, fecha.day, hora_pedida, 0, tzinfo=TIMEZONE)
+            end   = start + timedelta(hours=1)
+            libre = (
+                not _bloqueado_por_regla_horaria(start, end)
+                and not any(end > bs and start < be for bs, be in busy_ranges)
+            )
+            label = start.strftime('%A %d/%m a las %H:%M').capitalize()
+            if libre:
+                return f"El horario solicitado está DISPONIBLE.\n- {label} [ISO:{start.isoformat()}]"
+            alternativas = _slots_disponibles(fecha_inicio, time_max, busy_ranges, None)[:3]
+            if not alternativas:
+                return (f"El horario solicitado está OCUPADO y no hay más disponibilidad el "
+                        f"{fecha.strftime('%d/%m')}. ¿Querés otro día?")
+            lineas = [f"- {s.strftime('%A %d/%m a las %H:%M').capitalize()} [ISO:{s.isoformat()}]"
+                      for s in alternativas]
+            return "El horario solicitado está OCUPADO. Alternativas:\n" + "\n".join(lineas)
+
+        # Modo Amplio: sin hora, muestra primeros 4 slots disponibles
+        slots = _slots_disponibles(fecha_inicio, time_max, busy_ranges, None)
 
         if not slots:
             return (f"No hay disponibilidad el {fecha.strftime('%d/%m')}. "
