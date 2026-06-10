@@ -198,18 +198,36 @@ async def secretaria_principal(user_text: str, to_number: str, msg_id: str = Non
         logging.warning(f"[PRINCIPAL] Mensaje de {to_number}: {user_text}")
 
         # ── Historial últimas 6 horas (máx 40 mensajes) ────────────
+        # Solo se incluyen mensajes del usuario + mensajes de ESTE agente ("principal").
+        # Los mensajes de la agendadora se excluyen para evitar mezcla de contexto y roles.
         hace_6h = datetime.utcnow() - timedelta(hours=6)
         sesion  = (
             db.query(Mensaje)
-            .filter(Mensaje.cliente_id == cliente.id, Mensaje.fecha_creacion >= hace_6h)
+            .filter(
+                Mensaje.cliente_id    == cliente.id,
+                Mensaje.fecha_creacion >= hace_6h,
+            )
             .order_by(Mensaje.fecha_creacion.desc())
-            .limit(40)
+            .limit(60)
             .all()
         )
-        historial = [
-            {"role": "user" if m.rol == "usuario" else "assistant", "content": m.texto}
-            for m in reversed(sesion)
-        ]
+
+        raw = []
+        for m in reversed(sesion):
+            if m.rol == "usuario":
+                raw.append({"role": "user", "content": m.texto})
+            elif m.agente == "principal" or m.agente is None:
+                raw.append({"role": "assistant", "content": m.texto})
+            # mensajes de "agendadora" se descartan
+
+        # Colapsar mensajes consecutivos del mismo rol (necesario tras filtrar)
+        historial = []
+        for msg in raw:
+            if historial and historial[-1]["role"] == msg["role"]:
+                historial[-1]["content"] += "\n" + msg["content"]
+            else:
+                historial.append({"role": msg["role"], "content": msg["content"]})
+
         historial.append({"role": "user", "content": user_text})
 
         db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="usuario", texto=user_text))
@@ -242,7 +260,7 @@ async def secretaria_principal(user_text: str, to_number: str, msg_id: str = Non
                 texto = " ".join(b.text.strip() for b in texto_bloques)
                 logging.warning(f"[PRINCIPAL] Respuesta final: {texto}")
                 await enviar_mensaje_wpp(to_number, texto)
-                db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", texto=texto))
+                db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", agente="principal", texto=texto))
                 db.commit()
                 break
 
@@ -250,7 +268,7 @@ async def secretaria_principal(user_text: str, to_number: str, msg_id: str = Non
             if texto_bloques:
                 texto_previo = " ".join(b.text.strip() for b in texto_bloques)
                 await enviar_mensaje_wpp(to_number, texto_previo)
-                db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", texto=texto_previo))
+                db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", agente="principal", texto=texto_previo))
                 db.commit()
 
             if not tool_bloques:

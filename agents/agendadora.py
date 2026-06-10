@@ -435,28 +435,60 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
         cliente.mensajes_enviados += 1
         logging.warning(f"\n[AGENDADORA - {to_number}]: {user_text}")
 
-        # Historial reciente (últimas 6 horas, máx 20 mensajes)
+        # ── Historial reciente (últimas 6 horas, máx 30 mensajes) ───────────
+        # Solo se incluyen mensajes del usuario + mensajes de ESTE agente ("agendadora").
+        # Los mensajes de la secretaria principal se excluyen para evitar mezcla de contexto y roles.
         hace_6h = datetime.utcnow() - timedelta(hours=6)
         mensajes_recientes = (
             db.query(Mensaje)
-            .filter(Mensaje.cliente_id == cliente.id, Mensaje.fecha_creacion >= hace_6h)
+            .filter(
+                Mensaje.cliente_id    == cliente.id,
+                Mensaje.fecha_creacion >= hace_6h,
+            )
             .order_by(Mensaje.fecha_creacion.desc())
-            .limit(20)
+            .limit(40)
             .all()
         )
 
-        historial = []
+        raw = []
         for m in reversed(mensajes_recientes):
-            historial.append({
-                "role":    "user" if m.rol == "usuario" else "assistant",
-                "content": m.texto
-            })
+            if m.rol == "usuario":
+                raw.append({"role": "user", "content": m.texto})
+            elif m.agente == "agendadora":
+                raw.append({"role": "assistant", "content": m.texto})
+            # mensajes de "principal" o legacy se descartan — la agendadora recibe el contexto
+            # del paciente vía el system prompt, no vía historial de otro agente
+
+        # Colapsar mensajes consecutivos del mismo rol (necesario tras filtrar)
+        historial = []
+        for msg in raw:
+            if historial and historial[-1]["role"] == msg["role"]:
+                historial[-1]["content"] += "\n" + msg["content"]
+            else:
+                historial.append({"role": msg["role"], "content": msg["content"]})
+
         historial.append({"role": "user", "content": user_text})
 
         db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="usuario", texto=user_text))
 
-        nombre       = cliente.nombre_completo or (cliente.datos_extraidos or {}).get("nombre_contacto", "")
-        system_final = SYSTEM_PROMPT_AGENDADORA + (f"\nEl cliente se llama {nombre}." if nombre else "")
+        # ── System prompt con contexto completo del paciente ─────────
+        datos   = cliente.datos_extraidos or {}
+        nombre  = cliente.nombre_completo or datos.get("nombre_contacto", "")
+        lineas_ctx = []
+        if nombre:
+            lineas_ctx.append(f"El paciente se llama {nombre}.")
+        if cliente.obra_social:
+            lineas_ctx.append(f"Su cobertura es {cliente.obra_social}.")
+        if cliente.profesional_id:
+            from models import Profesional
+            prof = db.query(Profesional).filter(Profesional.id == cliente.profesional_id).first()
+            if prof:
+                lineas_ctx.append(f"Fue asignado a {prof.nombre} ({prof.especialidad}).")
+        elif datos.get("especialidad_turno"):
+            lineas_ctx.append(f"Especialidad a agendar: {datos['especialidad_turno']}.")
+
+        ctx_paciente = ("\n\n<CONTEXTO_PACIENTE>\n" + "\n".join(lineas_ctx) + "\n</CONTEXTO_PACIENTE>") if lineas_ctx else ""
+        system_final = SYSTEM_PROMPT_AGENDADORA + ctx_paciente
 
         definitions, handlers = get_tools_for_agendadora(empresa)
 
@@ -490,13 +522,13 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
                     continue
 
                 await enviar_mensaje_wpp(to_number, texto_respuesta)
-                db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", texto=texto_respuesta))
+                db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", agente="agendadora", texto=texto_respuesta))
                 break
 
             if texto_bloques:
                 texto_previo = " ".join(b.text.strip() for b in texto_bloques)
                 await enviar_mensaje_wpp(to_number, texto_previo)
-                db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", texto=texto_previo))
+                db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", agente="agendadora", texto=texto_previo))
 
             if not tool_bloques:
                 break

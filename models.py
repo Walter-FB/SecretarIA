@@ -90,6 +90,7 @@ class Mensaje(Base):
     cliente_id    = Column(String, ForeignKey("clientes.id"))
     empresa_id    = Column(String, ForeignKey("empresas.id"), nullable=True)
     rol           = Column(String, nullable=False)
+    agente        = Column(String, nullable=True)   # "principal" | "agendadora" | None (legacy)
     texto         = Column(String, nullable=False)
     fecha_creacion = Column(DateTime, default=datetime.datetime.utcnow)
 
