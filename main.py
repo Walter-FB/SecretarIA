@@ -19,13 +19,43 @@ import models  # noqa: F401 — necesario para que Base.metadata conozca las tab
 if engine.dialect.name == "sqlite":
     Base.metadata.create_all(bind=engine)
 else:
-    # En PostgreSQL aplicamos columnas faltantes directamente para no depender
+    # En PostgreSQL aplicamos esquema faltante directamente para no depender
     # del estado de alembic_version (que en Railway puede estar desincronizado).
     from sqlalchemy import text, inspect as sa_inspect
     with engine.begin() as conn:
         inspector = sa_inspect(engine)
+        tablas = inspector.get_table_names()
 
-        # agente en mensajes
+        # ── Tabla turnos (no creada por alembic en producción) ──────
+        if "turnos" not in tablas:
+            conn.execute(text("""
+                CREATE TABLE turnos (
+                    id                VARCHAR PRIMARY KEY,
+                    profesional_id    VARCHAR NOT NULL REFERENCES profesionales(id),
+                    cliente_id        VARCHAR REFERENCES clientes(id),
+                    empresa_id        VARCHAR NOT NULL REFERENCES empresas(id),
+                    fecha_hora_inicio TIMESTAMP NOT NULL,
+                    fecha_hora_fin    TIMESTAMP NOT NULL,
+                    estado            VARCHAR DEFAULT 'reservado',
+                    CONSTRAINT uq_turno_profesional_hora UNIQUE (profesional_id, fecha_hora_inicio)
+                )
+            """))
+            print("[STARTUP] Tabla 'turnos' creada ✓")
+        else:
+            print("[STARTUP] Tabla 'turnos' ya existe ✓")
+
+        # ── Columna profesional_id en clientes ──────────────────────
+        cols_clientes = [c["name"] for c in inspector.get_columns("clientes")]
+        if "profesional_id" not in cols_clientes:
+            conn.execute(text("ALTER TABLE clientes ADD COLUMN profesional_id VARCHAR REFERENCES profesionales(id)"))
+            print("[STARTUP] Columna 'profesional_id' agregada a clientes ✓")
+
+        # ── Columna bot_activo en clientes ──────────────────────────
+        if "bot_activo" not in cols_clientes:
+            conn.execute(text("ALTER TABLE clientes ADD COLUMN bot_activo BOOLEAN DEFAULT TRUE"))
+            print("[STARTUP] Columna 'bot_activo' agregada a clientes ✓")
+
+        # ── Columna agente en mensajes ───────────────────────────────
         cols_mensajes = [c["name"] for c in inspector.get_columns("mensajes")]
         if "agente" not in cols_mensajes:
             conn.execute(text("ALTER TABLE mensajes ADD COLUMN agente VARCHAR"))
