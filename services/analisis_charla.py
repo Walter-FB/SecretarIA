@@ -44,15 +44,14 @@ Usá la herramienta 'analisis_charla'. El resumen debe ser 1-3 líneas."""
 
 async def analizar_y_registrar(cliente, db) -> None:
     """
-    Analiza la conversación reciente del cliente con IA, guarda el resultado
-    en datos_extraidos y crea un seguimiento si la charla está fría o perdida.
-    Usada tanto por job_seguimiento (dinámico) como por analista_nocturno (fallback).
+    Analiza la conversación del cliente con IA y guarda el resultado en datos_extraidos.
+    Usada por job_seguimiento (fase 2) y analista_nocturno.
     """
-    hace_24_horas = _ahora() - timedelta(hours=24)
     mensajes = (
         db.query(Mensaje)
-        .filter(Mensaje.cliente_id == cliente.id, Mensaje.fecha_creacion >= hace_24_horas)
+        .filter(Mensaje.cliente_id == cliente.id)
         .order_by(Mensaje.fecha_creacion.asc())
+        .limit(40)
         .all()
     )
     if not mensajes:
@@ -62,7 +61,7 @@ async def analizar_y_registrar(cliente, db) -> None:
         f"{'CLIENTE' if m.rol == 'usuario' else 'SECRETARIA'}: {m.texto}"
         for m in mensajes
     )
-    datos = cliente.datos_extraidos or {}
+    datos  = cliente.datos_extraidos or {}
     system = _SYSTEM_PROMPT.format(contexto=datos.get("resumen_situacion", "Sin contexto previo"))
 
     try:
@@ -85,23 +84,10 @@ async def analizar_y_registrar(cliente, db) -> None:
         estado  = block.input.get("estado_charla", "en_progreso")
         resumen = block.input.get("resumen_nocturno", "")
 
-        datos["estado_charla"]    = estado
+        datos["estado_charla"]  = estado
         datos["resumen_nocturno"] = resumen
-        cliente.datos_extraidos   = datos
-        cliente.mensajes_enviados = 0  # reset diario del contador anti-spam
+        cliente.datos_extraidos = datos
 
         logging.warning(f"[ANALISIS] {cliente.telefono}: {estado} — {resumen}")
-
-        if estado in ("fria", "perdida"):
-            # Programar remarketing para mañana a las 14hs ARG (17:00 UTC)
-            manana_14hs = (_ahora() + timedelta(days=1)).replace(
-                hour=17, minute=0, second=0, microsecond=0
-            )
-            db.add(Seguimiento(
-                cliente_id       = cliente.id,
-                estado           = "pendiente",
-                fecha_programada = manana_14hs,
-            ))
-            logging.warning(f"[ANALISIS] Remarketing creado para {cliente.telefono} → {manana_14hs}")
 
     db.commit()

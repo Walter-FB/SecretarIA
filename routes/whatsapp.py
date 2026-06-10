@@ -165,6 +165,11 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         else:
             logging.warning(f"[ROUTER] Estado desconocido: '{estado_agente}' para {phone_number}")
 
+        # Timer de seguimiento: se resetea en cada mensaje activo (excluye manual)
+        if cliente_id and estado_agente != "manual":
+            from agents.seguimiento import resetear_timer
+            resetear_timer(cliente_id, phone_number, empresa_id)
+
     except Exception as e:
         logging.warning(f"[ROUTER ERROR]: {e}")
         import traceback; traceback.print_exc()

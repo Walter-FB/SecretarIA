@@ -38,10 +38,14 @@ DEFINITION = {
     }
 }
 
-# Definición para la secretaria principal (consulta de precio sin turno confirmado)
+# Definición para la secretaria principal (fallback: turno ya confirmado pero cobranza no se completó)
 DEFINITION_PRECIO = {
     "name": "iniciar_cobranzas",
-    "description": "Deriva a cobranzas para consultas de precios. Solo si el paciente aceptó ser derivado.",
+    "description": (
+        "Usá SOLO si el paciente ya tiene turno confirmado pero nunca recibió las instrucciones de pago "
+        "(la agendadora no completó el flujo). "
+        "Para consultas de precio usá consultar_precio en su lugar."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -96,47 +100,88 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     end = (start + timedelta(hours=1)) if start else None
 
     if not start or not end:
-        content = f"No pude interpretar la fecha '{dia} {hora}'. ¿Podés confirmar día y hora exactos?"
-        return content, None
+        return f"No pude interpretar la fecha '{dia} {hora}'. ¿Podés confirmar día y hora exactos?", None
 
-    try:
-        service = _build_calendar_service()
-        if _is_busy(service, start, end, calendar_id):
-            return "Ese horario ya está ocupado. Voy a buscar otra alternativa.", None
+    # Determinar motor (local vs Calendar)
+    from models import Profesional as ProfModel
+    profesional_obj = None
+    if cliente and cliente.profesional_id:
+        profesional_obj = session.query(ProfModel).filter(ProfModel.id == cliente.profesional_id).first()
 
-        descripcion = f"Turno {nombre_clinica} con {profesional}. Paciente: {cliente.nombre_completo or cliente.telefono}."
-        enlace      = _crear_evento(service, f"Turno {nombre_clinica} - {profesional}", start, end, descripcion, calendar_id)
-        content     = f"Turno reservado el {start.strftime('%A %d/%m a las %H:%M')} con {profesional}."
-        if enlace:
-            content += f" Link: {enlace}"
-    except Exception as e:
-        logging.warning(f"[TOOL iniciar_cobranzas ERROR calendar]: {e}")
-        content = "Hubo un problema al reservar el turno. Intentá con otra fecha."
-        return content, None
+    usar_local = bool(profesional_obj and profesional_obj.calendar_id is None)
+
+    if usar_local:
+        from models import Turno
+        from sqlalchemy.exc import IntegrityError
+        start_naive = start.replace(tzinfo=None)
+        end_naive   = end.replace(tzinfo=None)
+
+        ocupado = session.query(Turno).filter(
+            Turno.profesional_id    == profesional_obj.id,
+            Turno.fecha_hora_inicio == start_naive,
+            Turno.estado            == "reservado",
+        ).first()
+        if ocupado:
+            return "Ese horario se acaba de ocupar. Voy a buscar otra alternativa.", None
+
+        try:
+            session.add(Turno(
+                profesional_id    = profesional_obj.id,
+                cliente_id        = cliente.id,
+                empresa_id        = empresa_id,
+                fecha_hora_inicio = start_naive,
+                fecha_hora_fin    = end_naive,
+                estado            = "reservado",
+            ))
+            session.commit()
+            content = f"Turno reservado el {start.strftime('%A %d/%m a las %H:%M')} con {profesional_obj.nombre}."
+        except IntegrityError:
+            session.rollback()
+            return "Ese horario se acaba de ocupar. Voy a buscar otra alternativa.", None
+    else:
+        # Motor Calendar
+        try:
+            service = _build_calendar_service()
+            if _is_busy(service, start, end, calendar_id):
+                return "Ese horario ya está ocupado. Voy a buscar otra alternativa.", None
+
+            prof_nombre = profesional_obj.nombre if profesional_obj else profesional
+            descripcion = f"Turno {nombre_clinica} con {prof_nombre}. Paciente: {cliente.nombre_completo or cliente.telefono}."
+            enlace      = _crear_evento(service, f"Turno {nombre_clinica} - {prof_nombre}", start, end, descripcion, calendar_id)
+            content     = f"Turno reservado el {start.strftime('%A %d/%m a las %H:%M')} con {prof_nombre}."
+            if enlace:
+                content += f" Link: {enlace}"
+        except Exception as e:
+            logging.warning(f"[TOOL iniciar_cobranzas ERROR calendar]: {e}")
+            return "Hubo un problema al reservar el turno. Intentá con otra fecha.", None
 
     # Iniciar flujo de cobranza
     from services.cobranza import iniciar_cobranzas as iniciar_cobranzas_svc
+    esp = profesional_obj.nombre if profesional_obj else profesional
     next_state = await iniciar_cobranzas_svc(
         cliente.telefono,
-        especialidad=profesional,
-        detalle_turno=content,
-        empresa_id=empresa_id,
+        especialidad   = esp,
+        detalle_turno  = content,
+        empresa_id     = empresa_id,
     )
-
     return content, next_state
 
 
 async def handler_precio(tool_input, cliente, session, empresa, scope=None):
     """
-    Handler para el contexto de secretaria_principal: solo consulta de precio, sin turno.
-    Retorna (content, next_state).
+    Handler fallback para secretaria_principal: el turno ya fue confirmado por la agendadora
+    pero el flujo de cobranza no se completó. Lee ultimo_turno de datos_extraidos si existe.
     """
-    empresa_id = empresa.id if empresa else None
+    empresa_id    = empresa.id if empresa else None
+    datos         = dict(cliente.datos_extraidos or {}) if cliente else {}
+    detalle_turno = datos.get("ultimo_turno")
+
     from services.cobranza import iniciar_cobranzas as iniciar_cobranzas_svc
     next_state = await iniciar_cobranzas_svc(
         cliente.telefono,
         especialidad=tool_input.get("especialidad"),
         cobertura=tool_input.get("cobertura"),
+        detalle_turno=detalle_turno,
         empresa_id=empresa_id,
     )
-    return "Derivado a cobranzas. Instrucciones de pago enviadas.", next_state
+    return "Instrucciones de pago enviadas.", next_state

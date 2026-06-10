@@ -23,24 +23,42 @@ DEFINITION = {
 
 async def handler(tool_input, cliente, session, empresa, scope=None):
     """
-    Consulta la disponibilidad en Google Calendar y devuelve los slots libres.
-    Retorna (content, None) — la respuesta es informativa, no cambia estado.
+    Consulta disponibilidad con motor híbrido:
+    - profesional.calendar_id is None → motor local (tabla turnos)
+    - "empresa" o ID real          → Google Calendar
     """
-    from agents.agendadora import _consultar_calendar
+    from agents.agendadora import _consultar_calendar, _consultar_calendar_local
     from agents.herramientas_secretarias import enviar_mensaje_wpp
 
-    calendar_id = (
-        empresa.calendar_id if empresa and empresa.calendar_id
-        else os.getenv("CALENDAR_ID", "primary")
-    )
+    # Resolver profesional y motor
+    profesional = None
+    usar_local  = False
+    if cliente and cliente.profesional_id:
+        from models import Profesional
+        profesional = session.query(Profesional).filter(Profesional.id == cliente.profesional_id).first()
+    if profesional:
+        usar_local = profesional.calendar_id is None
 
     await enviar_mensaje_wpp(cliente.telefono, "Reviso la agenda... un momento.")
 
-    resultado = _consultar_calendar(
-        texto_fecha = tool_input.get("texto_fecha", "hoy"),
-        dias        = tool_input.get("dias_a_consultar", 3),
-        calendar_id = calendar_id
-    )
+    if usar_local:
+        resultado = _consultar_calendar_local(
+            texto_fecha   = tool_input.get("texto_fecha", "hoy"),
+            dias          = tool_input.get("dias_a_consultar", 3),
+            profesional_id = str(profesional.id),
+            db            = session,
+        )
+    else:
+        if profesional and profesional.calendar_id and profesional.calendar_id != "empresa":
+            cal_id = profesional.calendar_id
+        else:
+            cal_id = (empresa.calendar_id if empresa and empresa.calendar_id
+                      else os.getenv("CALENDAR_ID", "primary"))
+        resultado = _consultar_calendar(
+            texto_fecha = tool_input.get("texto_fecha", "hoy"),
+            dias        = tool_input.get("dias_a_consultar", 3),
+            calendar_id = cal_id,
+        )
 
     logging.warning(f"[TOOL consultar_calendar] Resultado: {resultado[:80]}...")
     return resultado, None

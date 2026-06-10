@@ -44,16 +44,13 @@ from agents.seguimiento import job_seguimiento
 
 scheduler = AsyncIOScheduler()
 
-# Seguimiento dinámico — cada 1 hora
-# Fase 1: reactivación si inactivo 1h | Fase 2: análisis si no responde | Fase 3: remarketing
-scheduler.add_job(job_seguimiento, 'interval', hours=1, id='seguimiento_hourly')
-
 
 @app.on_event("startup")
 async def startup_event():
+    scheduler.add_job(job_seguimiento, 'interval', minutes=5, id='seguimiento_fases_2_3')
     scheduler.start()
     print("[⏰ SCHEDULER] Jobs programados:")
-    print("   → Seguimiento dinámico: cada 1 hora (reactivación + análisis + remarketing)")
+    print("   → Seguimiento fases 2+3: cada 5 minutos (fase 1 corre por timer por charla)")
 
 
 @app.on_event("shutdown")

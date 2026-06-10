@@ -39,6 +39,8 @@ Cálido, eficiente, al grano. Usás "vos". Una pregunta por mensaje. Sin emojis 
 4. Respondé siempre con texto visible, aunque uses herramientas. No te quedes en silencio.
 5. Cuando el paciente confirme el turno, llamá iniciar_cobranzas INMEDIATAMENTE como herramienta. No describas que lo vas a hacer, no digas "te paso a cobranzas", simplemente llamá la herramienta. Copiá iso_datetime exactamente del [ISO:...] que apareció en la respuesta del calendario.
 Tu trabajo termina cuando llamás iniciar_cobranzas.
+6. Si consultar_calendar responde que el horario está DISPONIBLE, asumí que es válido y avanzá directamente a confirmar e iniciar cobranzas.
+   Si responde OCUPADO, ofrecé las alternativas que la herramienta devolvió.
 </TU_TRABAJO>
 
 <DERIVACIONES>
@@ -235,6 +237,56 @@ def _bloqueado_por_regla_horaria(start: datetime, end: datetime) -> bool:
     inicio_bloqueo = start.replace(hour=HORA_BLOQUEO_INICIO, minute=0, second=0, microsecond=0)
     fin_bloqueo = start.replace(hour=HORA_BLOQUEO_FIN, minute=0, second=0, microsecond=0)
     return end > inicio_bloqueo and start < fin_bloqueo
+
+
+def _slots_ocupados_local(db, profesional_id: str, fecha_inicio: datetime, fecha_fin: datetime) -> list:
+    """Rangos ocupados desde tabla turnos para motor local."""
+    from models import Turno
+    fi = fecha_inicio.replace(tzinfo=None)
+    ff = fecha_fin.replace(tzinfo=None)
+    ocupados = db.query(Turno).filter(
+        Turno.profesional_id    == profesional_id,
+        Turno.estado            == "reservado",
+        Turno.fecha_hora_inicio >= fi,
+        Turno.fecha_hora_inicio <  ff,
+    ).all()
+    return [(t.fecha_hora_inicio, t.fecha_hora_fin) for t in ocupados]
+
+
+def _consultar_calendar_local(texto_fecha: str, dias: int = 1, profesional_id: str = None, db=None) -> str:
+    """Motor local — disponibilidad desde tabla turnos."""
+    fecha       = _parse_fecha(texto_fecha)
+    hora_pedida = _parse_hora(texto_fecha)
+
+    if fecha is None:
+        return "No entendí la fecha. ¿Podés decirme el día?"
+
+    fecha_inicio = datetime(fecha.year, fecha.month, fecha.day, HORA_APERTURA, 0, tzinfo=TIMEZONE)
+    time_max     = fecha_inicio + timedelta(days=max(dias, 1))
+    busy_ranges  = _slots_ocupados_local(db, profesional_id, fecha_inicio, time_max) if db and profesional_id else []
+
+    if hora_pedida is not None:
+        start = datetime(fecha.year, fecha.month, fecha.day, hora_pedida, 0, tzinfo=TIMEZONE)
+        end   = start + timedelta(hours=1)
+        libre = (
+            not _bloqueado_por_regla_horaria(start, end)
+            and not any(end > bs and start < be for bs, be in busy_ranges)
+        )
+        label = start.strftime('%A %d/%m a las %H:%M').capitalize()
+        if libre:
+            return f"El horario solicitado está DISPONIBLE.\n- {label} [ISO:{start.isoformat()}]"
+        alternativas = _slots_disponibles(fecha_inicio, time_max, busy_ranges, None)[:3]
+        if not alternativas:
+            return (f"El horario solicitado está OCUPADO y no hay más disponibilidad el "
+                    f"{fecha.strftime('%d/%m')}. ¿Querés otro día?")
+        lineas = [f"- {s.strftime('%A %d/%m a las %H:%M').capitalize()} [ISO:{s.isoformat()}]" for s in alternativas]
+        return "El horario solicitado está OCUPADO. Alternativas:\n" + "\n".join(lineas)
+
+    slots = _slots_disponibles(fecha_inicio, time_max, busy_ranges, hora_pedida)
+    if not slots:
+        return f"No hay disponibilidad el {fecha.strftime('%d/%m')}. ¿Querés que busque en otra fecha?"
+    lineas = [f"- {s.strftime('%A %d/%m a las %H:%M').capitalize()} [ISO:{s.isoformat()}]" for s in slots]
+    return "Turnos disponibles:\n" + "\n".join(lineas)
 
 
 def _consultar_calendar(texto_fecha: str, dias: int = 1, calendar_id: str = None) -> str:

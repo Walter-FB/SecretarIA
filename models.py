@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, Integer, ForeignKey, JSON, DateTime
+from sqlalchemy import Column, String, Boolean, Integer, ForeignKey, JSON, DateTime, UniqueConstraint
 from sqlalchemy.orm import relationship
 from database import Base
 import uuid
@@ -116,6 +116,23 @@ class Seguimiento(Base):
     fecha_programada = Column(DateTime, nullable=False)
 
     cliente = relationship("Cliente", back_populates="seguimientos")
+
+
+class Turno(Base):
+    """Turno reservado para profesionales que usan motor local (sin Google Calendar)."""
+    __tablename__ = "turnos"
+
+    id                = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    profesional_id    = Column(String, ForeignKey("profesionales.id"), nullable=False)
+    cliente_id        = Column(String, ForeignKey("clientes.id"), nullable=True)
+    empresa_id        = Column(String, ForeignKey("empresas.id"), nullable=False)
+    fecha_hora_inicio = Column(DateTime, nullable=False)
+    fecha_hora_fin    = Column(DateTime, nullable=False)
+    estado            = Column(String, default="reservado")  # reservado | cancelado
+
+    __table_args__ = (
+        UniqueConstraint("profesional_id", "fecha_hora_inicio", name="uq_turno_profesional_hora"),
+    )
 
 
 class Pago(Base):

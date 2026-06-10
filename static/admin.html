@@ -135,6 +135,22 @@
     }
     #btn-send:disabled { background: #aaa; cursor: not-allowed; }
     #btn-send:not(:disabled):hover { background: #0f3460; }
+
+    /* ── Profesionales ── */
+    #prof-section { margin-top: 28px; }
+    #prof-section h2 { font-size: 0.95rem; font-weight: 700; margin-bottom: 12px; color: #1a1a2e; }
+    #prof-form {
+      background: #fff; border: 1px solid #ddd; border-radius: 8px;
+      padding: 16px; margin-top: 14px;
+    }
+    #prof-form h3 { font-size: 0.85rem; font-weight: 700; margin-bottom: 12px; color: #1a1a2e; }
+    .prof-form-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+    .prof-field label { font-size: 0.78rem; display: block; margin-bottom: 3px; color: #555; }
+    .prof-field input, .prof-field select {
+      padding: 6px 9px; border: 1px solid #ccc; border-radius: 5px;
+      font-size: 0.83rem; font-family: inherit;
+    }
+    #prof-form-status { font-size: 0.78rem; margin-top: 8px; }
   </style>
 </head>
 <body>
@@ -168,6 +184,55 @@
         </thead>
         <tbody id="clients-tbody"></tbody>
       </table>
+    </div>
+
+    <!-- ── Profesionales ── -->
+    <div id="prof-section" style="display:none">
+      <h2>Profesionales</h2>
+      <table id="prof-table">
+        <thead>
+          <tr>
+            <th>Nombre</th>
+            <th>Especialidad</th>
+            <th>Particular</th>
+            <th>Obra Social</th>
+            <th title="calendar_id: 'empresa'=Calendar de la empresa, null=motor local, ID=Calendar propio">Motor</th>
+            <th>Activo</th>
+          </tr>
+        </thead>
+        <tbody id="prof-tbody"></tbody>
+      </table>
+      <div id="prof-form">
+        <h3>Agregar profesional</h3>
+        <div class="prof-form-row">
+          <div class="prof-field">
+            <label>Nombre</label>
+            <input id="prof-nombre" type="text" placeholder="Lic. Apellido" style="width:160px" />
+          </div>
+          <div class="prof-field">
+            <label>Especialidad</label>
+            <select id="prof-especialidad">
+              <option value="psicologo">Psicólogo/a</option>
+              <option value="psiquiatra">Psiquiatra</option>
+              <option value="otro">Otro</option>
+            </select>
+          </div>
+          <div class="prof-field">
+            <label>Particular ($)</label>
+            <input id="prof-particular" type="number" placeholder="30000" style="width:110px" />
+          </div>
+          <div class="prof-field">
+            <label>Obra Social ($)</label>
+            <input id="prof-os" type="number" placeholder="19000" style="width:110px" />
+          </div>
+          <div class="prof-field">
+            <label title="'empresa'=Calendar de empresa, vacío=motor local">Calendar ID</label>
+            <input id="prof-calendar" type="text" placeholder="empresa (Calendar) o vacío (local)" style="width:220px" />
+          </div>
+          <button id="btn-add-prof" class="btn btn-primary btn-sm">Agregar</button>
+        </div>
+        <p id="prof-form-status" style="display:none"></p>
+      </div>
     </div>
 
     <div id="conv-panel">
@@ -260,6 +325,7 @@
     currentEmpId = empId;
     currentTel   = null;
     $('conv-panel').style.display = 'none';
+    cargarProfesionales(empId);
     $('clients-table').style.display = 'none';
     $('placeholder').textContent = 'Cargando…';
     $('placeholder').style.display = 'block';
@@ -428,6 +494,75 @@
   }
 
   // ── Listeners ───────────────────────────────────────────────────────
+  // ── Profesionales ────────────────────────────────────────────────
+  async function cargarProfesionales(empId) {
+    const section = $('prof-section');
+    section.style.display = 'block';
+    $('prof-tbody').innerHTML = '<tr><td colspan="6" style="padding:12px;color:#aaa;font-size:0.83rem">Cargando...</td></tr>';
+    try {
+      const profs = await apiFetch('GET', `/admin/profesionales?empresa_id=${encodeURIComponent(empId)}`);
+      renderProfesionales(profs);
+    } catch (err) {
+      $('prof-tbody').innerHTML = `<tr><td colspan="6" style="padding:12px;color:#c00;font-size:0.83rem">${esc(err.message)}</td></tr>`;
+    }
+  }
+
+  function renderProfesionales(profs) {
+    const tbody = $('prof-tbody');
+    if (!profs.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="padding:12px;color:#aaa;font-size:0.83rem;text-align:center">Sin profesionales.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = profs.map(p => `
+      <tr>
+        <td>${esc(p.nombre)}</td>
+        <td>${esc(p.especialidad)}</td>
+        <td>$${Number(p.tarifa_particular).toLocaleString('es-AR')}</td>
+        <td>$${Number(p.tarifa_obra_social).toLocaleString('es-AR')}</td>
+        <td><code style="font-size:0.75rem;background:#f5f5f5;padding:2px 5px;border-radius:3px">${esc(p.calendar_id ?? 'null (local)')}</code></td>
+        <td style="text-align:center">${p.activo ? '✅' : '❌'}</td>
+      </tr>
+    `).join('');
+  }
+
+  async function agregarProfesional() {
+    const nombre       = $('prof-nombre').value.trim();
+    const especialidad = $('prof-especialidad').value;
+    const particular   = parseInt($('prof-particular').value);
+    const os           = parseInt($('prof-os').value);
+    const calRaw       = $('prof-calendar').value.trim();
+    const calId        = calRaw === '' ? null : calRaw;
+    const status       = $('prof-form-status');
+
+    if (!nombre || isNaN(particular) || isNaN(os)) {
+      status.textContent = 'Completá nombre y tarifas.';
+      status.style.color = '#c00';
+      status.style.display = 'block';
+      return;
+    }
+    $('btn-add-prof').disabled = true;
+    try {
+      await apiFetch('POST', '/admin/profesionales', {
+        empresa_id: currentEmpId, nombre, especialidad,
+        tarifa_particular: particular, tarifa_obra_social: os, calendar_id: calId,
+      });
+      status.textContent = `✓ ${nombre} agregado.`;
+      status.style.color = '#2e7d32';
+      status.style.display = 'block';
+      $('prof-nombre').value = '';
+      $('prof-particular').value = '';
+      $('prof-os').value = '';
+      $('prof-calendar').value = '';
+      cargarProfesionales(currentEmpId);
+    } catch (err) {
+      status.textContent = `Error: ${err.message}`;
+      status.style.color = '#c00';
+      status.style.display = 'block';
+    } finally {
+      $('btn-add-prof').disabled = false;
+    }
+  }
+
   $('btn-connect').addEventListener('click', conectar);
   $('token-input').addEventListener('keydown', e => { if (e.key === 'Enter') conectar(); });
   $('empresa-select').addEventListener('change', e => { if (e.target.value) cargarClientes(e.target.value); });
@@ -438,6 +573,7 @@
     renderTabla();
   });
 
+  $('btn-add-prof').addEventListener('click', agregarProfesional);
   $('btn-send').addEventListener('click', enviarMensaje);
   $('msg-input').addEventListener('keydown', e => {
     // Ctrl+Enter o Cmd+Enter para enviar; Enter solo hace salto de línea

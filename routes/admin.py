@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from database import SessionLocal
-from models import Cliente, Mensaje, Empresa
+from models import Cliente, Mensaje, Empresa, Profesional
 
 VENTANA_HORAS = 20  # WhatsApp cierra la sesión libre a las 24h; usamos 20h de margen
 
@@ -114,6 +114,67 @@ def get_conversacion(telefono: str, empresa_id: str):
                 for m in mensajes
             ],
         }
+    finally:
+        db.close()
+
+
+class ProfesionalBody(BaseModel):
+    empresa_id:        str
+    nombre:            str
+    especialidad:      str
+    tarifa_particular: int
+    tarifa_obra_social: int
+    calendar_id:       str | None = None
+
+
+@router.get("/profesionales", dependencies=[Depends(_require_admin)])
+def get_profesionales(empresa_id: str):
+    db = SessionLocal()
+    try:
+        profs = db.query(Profesional).filter(Profesional.empresa_id == empresa_id).all()
+        return [
+            {
+                "id":                 p.id,
+                "nombre":             p.nombre,
+                "especialidad":       p.especialidad,
+                "tarifa_particular":  p.tarifa_particular,
+                "tarifa_obra_social": p.tarifa_obra_social,
+                "calendar_id":        p.calendar_id,
+                "activo":             p.activo,
+            }
+            for p in profs
+        ]
+    finally:
+        db.close()
+
+
+@router.post("/profesionales", dependencies=[Depends(_require_admin)])
+def crear_profesional(body: ProfesionalBody):
+    import uuid
+    db = SessionLocal()
+    try:
+        empresa = db.query(Empresa).filter(Empresa.id == body.empresa_id).first()
+        if not empresa:
+            raise HTTPException(status_code=404, detail="Empresa no encontrada")
+        prof = Profesional(
+            id                 = str(uuid.uuid4()),
+            empresa_id         = body.empresa_id,
+            nombre             = body.nombre,
+            especialidad       = body.especialidad,
+            tarifa_particular  = body.tarifa_particular,
+            tarifa_obra_social = body.tarifa_obra_social,
+            calendar_id        = body.calendar_id,
+            activo             = True,
+        )
+        db.add(prof)
+        db.commit()
+        logging.warning(f"[ADMIN] Profesional creado: {body.nombre} (empresa={body.empresa_id})")
+        return {"ok": True, "id": prof.id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
 

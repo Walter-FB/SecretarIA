@@ -6,6 +6,8 @@ from tools import (
     notificar_walter_urgente,
     consultar_calendar,
     volver_secretaria_principal,
+    consultar_precio,
+    silenciar_seguimiento,
 )
 
 # Catálogo completo. Cada entrada: nombre → módulo con DEFINITION y handler.
@@ -17,6 +19,8 @@ TOOL_CATALOG = {
     "notificar_walter_urgente":     notificar_walter_urgente,
     "consultar_calendar":           consultar_calendar,
     "volver_secretaria_principal":  volver_secretaria_principal,
+    "consultar_precio":             consultar_precio,
+    "silenciar_seguimiento":        silenciar_seguimiento,
 }
 
 

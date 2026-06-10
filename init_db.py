@@ -76,7 +76,11 @@ def seed_profesionales():
                 Profesional.empresa_id == EMPRESA_DEFAULT_ID
             ).first()
             if existe:
-                print(f"[OK] Profesional '{datos['nombre']}' ya existe.")
+                if existe.calendar_id is None:
+                    existe.calendar_id = "empresa"
+                    print(f"[OK] Profesional '{datos['nombre']}': calendar_id → 'empresa'.")
+                else:
+                    print(f"[OK] Profesional '{datos['nombre']}' ya existe.")
                 continue
             prof = Profesional(
                 empresa_id         = EMPRESA_DEFAULT_ID,
@@ -84,7 +88,7 @@ def seed_profesionales():
                 especialidad       = datos["especialidad"],
                 tarifa_particular  = datos["tarifa_particular"],
                 tarifa_obra_social = datos["tarifa_obra_social"],
-                calendar_id        = None,
+                calendar_id        = "empresa",
                 activo             = True,
             )
             db.add(prof)

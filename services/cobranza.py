@@ -15,9 +15,9 @@ from models import Cliente
 _EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
 
 PAGO_INFO = {
-    "titular": "Juan Manuel Barros Ferreyra",
-    "alias":   "juan9910",
-    "cvu":     "124235243423432432",
+    "titular": "Walter Franco Berrutto",
+    "alias":   "walter.mate3",
+    "cvu":     "",
 }
 
 
@@ -65,6 +65,8 @@ def generar_mensaje_cobro(db, especialidad: str = None, cobertura: str = None, o
     else:
         mensaje += f"Total a pagar: ${monto:,}\n\n"
 
+    if not (empresa and empresa.alias_pago):
+        logging.warning(f"[⚠️ PAGO] empresa '{getattr(empresa, 'nombre', 'desconocida')}' sin alias_pago — usando fallback de Walter")
     alias   = (empresa.alias_pago if empresa and empresa.alias_pago else PAGO_INFO["alias"])
     cvu     = (empresa.cvu_pago   if empresa and empresa.cvu_pago   else PAGO_INFO["cvu"])
     titular = (empresa.nombre     if empresa else PAGO_INFO["titular"])
