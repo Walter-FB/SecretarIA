@@ -1,0 +1,115 @@
+CHANGELOG — Estabilización SecretarIA (3A→3G)
+Fecha: 2026-06-11
+=======================================================
+
+3A — LOCK DE CONCURRENCIA POR CLIENTE
+--------------------------------------
+Problema: dos mensajes seguidos del mismo número disparaban dos pipelines en paralelo → cobros duplicados.
+Solución: módulo-nivel dict de asyncio.Lock en herramientas_secretarias.py (get_client_lock).
+Cada agente (secretaria_principal, secretaria_agendadora, handler_esperando_mail) adquiere el lock
+al inicio y lo libera en el finally. Números distintos siguen corriendo en paralelo.
+Archivos: agents/herramientas_secretarias.py, agents/secretaria_principal.py,
+          agents/agendadora.py, services/cobranza.py
+
+3B — HISTORIAL DEFENSIVO EXPLÍCITO
+------------------------------------
+El bug descrito (mensajes del usuario perdidos al pasar de agendadora a principal) NO existía
+en el código — el filtro ya era correcto. Se hizo la verificación defensiva explícita agregando
+"m.rol == 'asistente'" en el elif de ambos agentes para documentar el intent en código.
+También se agregó "m.agente is None" a la agendadora para capturar mensajes legacy.
+Archivos: agents/secretaria_principal.py, agents/agendadora.py
+
+3C — TOOL omitir_respuesta
+---------------------------
+Nueva tool sin parámetros. Handler retorna ("", "_omitir_"). Agrega silencio intencional
+cuando el paciente cerró la charla o no corresponde responder.
+Agregada al TOOL_CATALOG, a get_tools_for_empresa (principal) y get_tools_for_agendadora.
+Agregada al prompt de Abby en sección <HERRAMIENTAS>.
+Archivos: tools/omitir_respuesta.py (nuevo), tools/registry.py,
+          agents/secretaria_principal.py (prompt)
+
+3D — TRANSICIONES ÚNICAS + SANITIZACIÓN
+-----------------------------------------
+Problema: texto_previo ("lo reviso ahora mismo") se enviaba antes de tools terminales,
+creando mensajes dobles.
+Solución 1: TERMINAL_TOOLS = {"iniciar_agendamiento", "iniciar_cobranzas", "omitir_respuesta"}.
+Antes de enviar texto_previo, verificar si hay tools terminales; si las hay, descartar texto_previo.
+Solución 2: Manejo de "_omitir_" en ambos loops (break sin cambiar estado_agente).
+Solución 3: enviar_mensaje_wpp reemplaza ¿, ¡, ** antes de enviar a Meta.
+Archivos: agents/secretaria_principal.py, agents/agendadora.py,
+          agents/herramientas_secretarias.py
+
+3E — AGENDADORA CON CONTEXTO + OFERTA PROACTIVA
+-------------------------------------------------
+Problema: la agendadora arrancaba ciega, re-saludaba y pedía día/hora en abierto.
+Cambio 1 — Prompt: agregado al inicio de SYSTEM_PROMPT_AGENDADORA:
+  "La conversación YA está en curso. NUNCA saludes, NUNCA te presentes..."
+  "Tu primer acto es consultar el calendario y ofrecer 2-3 horarios concretos."
+Cambio 2 — Historial: agregado "m.agente is None" para capturar mensajes legacy.
+Archivos: agents/agendadora.py
+
+3F — MUERTE DEL ANALISTA + CIERRE DE CICLO + SEGUIMIENTO ÚNICO
+----------------------------------------------------------------
+PARTE 1 — Analista eliminado:
+- Borrado agents/analista.py (dead code — secretaria_resumen nunca se llamaba).
+- Borrado services/analisis_charla.py (usado solo por fase 2 del job, eliminado con él).
+- Removido ColaAnalisis de models.py y su relación en Cliente.
+- Removida clase Seguimiento de models.py y su relación en Cliente.
+- Removida upsert_cola_analisis de herramientas_secretarias.py.
+- Removida llamada a upsert_cola_analisis en secretaria_principal.py.
+- Removido job_seguimiento y APScheduler completo de main.py.
+- Actualizada tools/silenciar_seguimiento.py: ya no referencia modelo Seguimiento.
+- Nueva migración Alembic: adeda5eeebdc (drop cola_analisis, drop seguimientos).
+
+PARTE 2 — Cierre de ciclo determinístico (sin LLM):
+Al confirmar turno, services/cobranza.py ahora:
+  - Escribe datos_extraidos["pago_estado"] = "esperando_comprobante"
+  - Escribe datos_extraidos["monto_pendiente"] = tarifa
+  - Envía template fijo: "Gracias {nombre}! ya quedo reservado tu turno del {detalle}.
+    Cuando puedas mandanos el comprobante por aca y queda todo listo 😊"
+  - Persiste como Mensaje con agente="cobranzas"
+_build_system_prompt en secretaria_principal.py ahora muestra en MEMORIA_DEL_CLIENTE:
+  - "Turno vigente: ..." + "Pago: esperando comprobante de $X"  (si pago_estado existe)
+  - "Turno vigente: ..." + "Pago: realizado"  (si pago_estado == "pagado")
+
+PARTE 3 — Seguimiento único de 2.5 min (reemplaza todo):
+agents/seguimiento.py reescrito completamente:
+- resetear_timer / cancelar_timer: igual que antes.
+- _disparados: set[str] — máx 1 seguimiento por cliente por sesión de proceso.
+- Condiciones de no-disparo: pago_estado existe, manual, fuera de 09-21 ARG.
+- _toque_contextual: llama a Claude Haiku con historial real + trigger sintético
+  (NO guardado en DB). Si Claude llama omitir_respuesta → silencio. Si genera texto → enviar.
+Archivos: agents/seguimiento.py, agents/herramientas_secretarias.py,
+          agents/secretaria_principal.py, services/cobranza.py, models.py, main.py,
+          tools/silenciar_seguimiento.py
+
+3G — ANTI DOBLE CONFIRMACIÓN (solo prompt de Abby)
+---------------------------------------------------
+Agregado a sección <TU_TRABAJO>:
+  "CONFIRMÁS UNA SOLA VEZ: cada dato se confirma como máximo una vez en toda la charla.
+  Si el paciente ya confirmó el profesional, llamás iniciar_agendamiento directo.
+  Solo confirmás de nuevo si el sistema devolvió algo DISTINTO a lo que el paciente dijo."
+Ajustado ejemplo "Recurrente sin memoria": la confirmación de identidad y profesional
+ahora es UN solo mensaje ("Ahí te encontré! sos {nombre} con {cobertura} y {profesional}...").
+Archivos: agents/secretaria_principal.py
+
+=======================================================
+ARCHIVOS ELIMINADOS:
+  agents/analista.py
+  services/analisis_charla.py
+
+NUEVOS ARCHIVOS:
+  tools/omitir_respuesta.py
+  migrations/versions/adeda5eeebdc_drop_cola_analisis_seguimientos.py
+
+MIGRACIONES:
+  adeda5eeebdc — drop cola_analisis, drop seguimientos (aplicada ✓)
+
+SANITY CHECK:
+  py -3.11 -c "from tools.registry import get_tools_for_empresa, get_tools_for_agendadora;
+  from tools import iniciar_cobranzas, omitir_respuesta;
+  defs_p, hdlrs_p = get_tools_for_empresa(None);
+  defs_a, hdlrs_a = get_tools_for_agendadora();
+  assert 'omitir_respuesta' in hdlrs_p and 'omitir_respuesta' in hdlrs_a;
+  print('OK')"
+  → OK

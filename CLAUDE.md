@@ -19,20 +19,20 @@
 
 Bot de WhatsApp para **Clínica Abriness** (salud mental). Secretaria virtual: atiende pacientes, coordina turnos en Google Calendar, gestiona cobros por transferencia. Corre en Railway (Python/FastAPI). Sin front-end.
 
-**Modelo:** `claude-haiku-4-5` en todos los agentes.
+**Modelos:** `claude-sonnet-4-6` en `secretaria_principal` · `claude-haiku-4-5` en `agendadora` y `seguimiento`.
 
 ---
 
 ## Stack
 
-Python 3.11 · FastAPI · PostgreSQL (Railway/pg8000, SQLite local) · SQLAlchemy 2.0 · Alembic · APScheduler · Google Calendar API (Service Account) · Anthropic SDK · Brevo · WhatsApp Cloud API (Meta)
+Python 3.11 · FastAPI · PostgreSQL (Railway/pg8000, SQLite local) · SQLAlchemy 2.0 · Alembic · Google Calendar API (Service Account) · Anthropic SDK · Brevo · WhatsApp Cloud API (Meta)
 
 ---
 
 ## Estructura de archivos
 
 ```
-main.py                   FastAPI entry + APScheduler + seeds
+main.py                   FastAPI entry + seeds (sin scheduler)
 database.py               SQLAlchemy config
 models.py                 Todas las tablas
 init_db.py                Seeds: seed_empresa_default, seed_profesionales, seed_abriness_multitenant
@@ -50,26 +50,26 @@ tools/
   iniciar_agendamiento.py
   iniciar_cobranzas.py    DEFINITION+handler (agendadora) / DEFINITION_PRECIO+handler_precio (principal)
   consultar_precio.py     Solo lectura de BD — devuelve precio y lo manda directo al paciente
+  omitir_respuesta.py     Silencio intencional — no envía nada, corta el loop
   notificar_walter_urgente.py
   consultar_calendar.py
   volver_secretaria_principal.py
+  silenciar_seguimiento.py
 
 routes/
   whatsapp.py             Webhook Meta + router de estados + comandos Walter
   admin.py                Panel admin — Bearer token
 
 agents/
-  herramientas_secretarias.py  Helpers WPP, client_claude, NUMERO_WALTER
-  secretaria_principal.py      Abby — loop máx 4 iter
-  agendadora.py                Agenda — loop máx 5 iter
-  analista.py                  Extrae resumen_situacion al derivar
-  analista_nocturno.py         Job 21:00 ARG
+  herramientas_secretarias.py  Helpers WPP, client_claude, NUMERO_WALTER, get_client_lock
+  secretaria_principal.py      Abby — loop máx 4 iter, lock por cliente
+  agendadora.py                Agenda — loop máx 5 iter, lock por cliente
+  seguimiento.py               Timer 2.5 min por charla — toque contextual con IA
 
 services/
-  cobranza.py             Lógica de cobro + email
+  cobranza.py             Lógica de cobro + email + template de cierre
   profesionales.py        CRUD Profesional scopeado por empresa_id
   mail_confirmacion.py    Email HTML vía Brevo
-  seguimiento.py          Job cada hora — remarketing
 ```
 
 ---
@@ -94,7 +94,7 @@ services/
 | `empresa_id` | FK multi-tenant |
 | `estado_agente` | El enrutador — ver tabla abajo |
 | `bot_activo` | False → mensajes se guardan pero no se procesan |
-| `datos_extraidos` | JSON: `resumen_situacion`, `estado_charla`, `ultimo_turno`, `especialidad_turno`, `intentos_email` |
+| `datos_extraidos` | JSON: `ultimo_turno`, `especialidad_turno`, `pago_estado`, `monto_pendiente`, `intentos_email` |
 | `profesional_id` | FK → profesionales |
 
 ### `profesionales` (seed Abriness)
@@ -123,22 +123,29 @@ Cualquier otro valor → warning + mensaje ignorado.
 
 Contrato de cada handler: `async def handler(tool_input, cliente, session, empresa, scope=None) → (str, estado | None)`
 
-**Sentinel `_skip_`:** si el handler devuelve `"_skip_"` como estado, el loop rompe sin llamar a Claude de nuevo ni cambiar `estado_agente`. Lo usa `consultar_precio` para mandar el mensaje directo y ahorrar un API call.
+**Sentinels de retorno:**
+- `"_skip_"` — la tool ya mandó el mensaje directamente, no llamar a Claude de nuevo. Lo usa `consultar_precio`.
+- `"_omitir_"` — silencio intencional, no enviar nada, cortar el loop. Lo usa `omitir_respuesta`.
+
+**Tools terminales** (su ejecución descarta cualquier `texto_previo` del turno):
+`iniciar_agendamiento`, `iniciar_cobranzas`, `omitir_respuesta`.
 
 **`iniciar_cobranzas` tiene dos variantes:**
-- `DEFINITION` + `handler` — agendadora: recibe `dia/hora/profesional/iso_datetime`, crea evento en Calendar, luego cobra.
-- `DEFINITION_PRECIO` + `handler_precio` — principal (fallback): si la agendadora bugueó y el turno quedó en `datos_extraidos["ultimo_turno"]`, lo rescata y completa el cobro. Para preguntas de precio usar `consultar_precio`.
+- `DEFINITION` + `handler` — agendadora: recibe `dia/hora/profesional/iso_datetime`, crea evento en Calendar, cobra, envía template de cierre, escribe `pago_estado`/`monto_pendiente` en `datos_extraidos`.
+- `DEFINITION_PRECIO` + `handler_precio` — principal (fallback): si la agendadora no completó el flujo.
 
-**`consultar_precio`** — lee BD, calcula tarifa, manda el mensaje directo al paciente, retorna `_skip_`. No notifica a Walter.
+**`consultar_precio`** — lee BD, calcula tarifa, manda el mensaje directo, retorna `_skip_`. No notifica a Walter.
+
+**`omitir_respuesta`** — no envía nada, retorna `_omitir_`. Usada también por el seguimiento de 2.5 min si no hay nada pendiente.
 
 ### `tools/registry.py`
-- `get_tools_for_empresa(empresa)` → principal, usa `DEFINITION_PRECIO` para cobranzas
-- `get_tools_for_agendadora(empresa)` → `consultar_calendar`, `iniciar_cobranzas`, `volver_secretaria_principal`, `notificar_walter_urgente`
+- `get_tools_for_empresa(empresa)` → principal, incluye `omitir_respuesta`
+- `get_tools_for_agendadora(empresa)` → `consultar_calendar`, `iniciar_cobranzas`, `volver_secretaria_principal`, `notificar_walter_urgente`, `omitir_respuesta`
 
 Las tools **no** hacen commit de `estado_agente`. Lo hace el loop del agente:
 ```python
 resultado, derivar = await handler_fn(...)
-if derivar and derivar != "_skip_":
+if derivar and derivar not in ("_skip_", "_omitir_"):
     cliente.estado_agente = derivar
     db.commit()
 ```
@@ -175,10 +182,12 @@ Número normalizado antes de buscar (solo dígitos). Ver `_buscar_cliente_normal
 ```
 WhatsApp → webhook → busca empresa → router por estado_agente
   principal: Abby recolecta datos → registrar_paciente → iniciar_agendamiento
-  agendadora: consultar_calendar → paciente elige slot → iniciar_cobranzas
+  agendadora: consultar_calendar → oferta proactiva 2-3 slots → paciente elige → iniciar_cobranzas
     → crea evento Calendar → envía alias/CVU → notifica Walter
-    → tiene mail: envía email HTML → estado = manual
-    → sin mail: pide email → estado = esperando_mail → email válido → estado = manual
+    → escribe pago_estado="esperando_comprobante" + monto_pendiente
+    → envía template "Gracias {nombre}! ya quedó reservado..."
+    → tiene mail: envía email HTML → estado = principal
+    → sin mail: pide email → estado = esperando_mail → email válido → estado = principal
 ```
 
 ---
@@ -225,13 +234,15 @@ Single-page en `/admin`. Auth por Bearer token (`ADMIN_TOKEN`). Token en memoria
 
 ## Consideraciones no obvias
 
+- **Concurrencia por cliente:** `get_client_lock(empresa_id, telefono)` en `herramientas_secretarias.py`. Cada agente y `handler_esperando_mail` adquieren el lock al inicio y lo liberan en `finally`. Mensajes del mismo número se procesan en serie.
+- **Sanitización global:** `enviar_mensaje_wpp` reemplaza `¿`, `¡`, `**` automáticamente antes de enviar.
+- **Seguimiento:** un solo timer por sesión de 2.5 min (`agents/seguimiento.py`). Al vencer llama al agente activo con instrucción sintética. Máx 1 disparo por sesión de proceso. Sin scheduler periódico.
 - **Mensaje de notificación a Walter** (`enviar_notificacion_a_walter()`) — no cambiar el texto sin consultar.
-- **Anti-spam:** `LIMITE_MENSAJES = 20` en `whatsapp.py`. No se resetea (deuda técnica).
+- **Anti-spam:** `LIMITE_MENSAJES = 35` en `whatsapp.py`. No se resetea (deuda técnica).
 - **Historial a Claude en UTC**, Calendar en `America/Argentina/Buenos_Aires`. No mezclar.
-- **SQLite local:** no tiene migraciones aplicadas. Correr `alembic upgrade head` o `reset_db.py` al agregar columnas.
+- **SQLite local:** correr `alembic upgrade head` al arrancar o al agregar columnas.
 - **`phone_number_id` en Railway:** hasta configurar con `UPDATE empresas SET phone_number_id = 'ID'`, usa fallback a `EMPRESA_DEFAULT_ID`.
-- **`services/models.py`** es duplicado de `models.py`. Pendiente unificar.
-- **Analista nocturno** no escribe al cliente. Solo clasifica y crea seguimientos.
+- **`pago_estado`** en `datos_extraidos`: `"esperando_comprobante"` → seguimiento no dispara. `"pagado"` → lo mismo. Abby lo muestra en su memoria si existe.
 
 ---
 
@@ -249,5 +260,6 @@ python -c "from tools.registry import get_tools_for_empresa, get_tools_for_agend
 - **`phone_number_id`** en Railway no configurado — ver consideraciones.
 - **`SYSTEM_PROMPT_AGENDADORA`** hardcodeado en `agendadora.py`, no viene de BD.
 - **Endpoint para cambiar `estado_agente` manualmente** — hoy requiere SQL directo.
-- **Rate limiting:** límite de 20 no tiene ventana de tiempo.
+- **Rate limiting:** límite de 35 no tiene ventana de tiempo.
+- **`_disparados` set** en seguimiento.py — se limpia al reiniciar el proceso (Railway redeploy). Para persistencia entre deploys usar Redis o BD.
 - **MP pausado:** reimplementar contra arquitectura multi-tenant cuando se retome.

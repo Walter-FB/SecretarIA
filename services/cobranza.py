@@ -2,7 +2,7 @@ import unicodedata
 import re
 import logging
 
-from agents.herramientas_secretarias import enviar_mensaje_wpp, enviar_notificacion_a_walter, marcar_leido_wpp
+from agents.herramientas_secretarias import enviar_mensaje_wpp, enviar_notificacion_a_walter, marcar_leido_wpp, get_client_lock
 from services.profesionales import (
     get_profesional_by_nombre,
     get_profesional_by_especialidad,
@@ -10,7 +10,7 @@ from services.profesionales import (
     _normalizar_especialidad,
 )
 from database import SessionLocal
-from models import Cliente
+from models import Cliente, Mensaje
 
 _EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
 
@@ -142,9 +142,32 @@ async def iniciar_cobranzas(
         await enviar_notificacion_a_walter(to_number, nombre, numero_walter)
         logging.warning(f"[COBRANZAS] Walter notificado")
 
-        # Email: solo si hay turno confirmado
-        if detalle_turno:
-            if cliente and cliente.mail:
+        # Cierre de ciclo: escribir estado de pago + template de agradecimiento
+        if detalle_turno and cliente:
+            prof_obj    = _resolver_profesional(db, especialidad, empresa_id)
+            modalidad_c = _normalizar_cobertura(cobertura)[0]
+            tarifa      = get_tarifa(prof_obj, modalidad_c)
+
+            datos = dict(cliente.datos_extraidos or {})
+            datos["pago_estado"]     = "esperando_comprobante"
+            datos["monto_pendiente"] = tarifa
+            cliente.datos_extraidos  = datos
+            db.commit()
+
+            nombre_paciente = cliente.nombre_completo or "paciente"
+            msg_gracias = (
+                f"Gracias {nombre_paciente}! ya quedo reservado tu turno del {detalle_turno}. "
+                f"Cuando puedas mandanos el comprobante por aca y queda todo listo 😊"
+            )
+            await enviar_mensaje_wpp(to_number, msg_gracias)
+            db.add(Mensaje(
+                cliente_id=cliente.id, empresa_id=cliente.empresa_id,
+                rol="asistente", agente="cobranzas", texto=msg_gracias
+            ))
+            db.commit()
+
+            # Email: solo si hay turno confirmado
+            if cliente.mail:
                 logging.warning(f"[📧 COBRANZAS] Mail ya registrado ({cliente.mail}), enviando confirmación.")
                 await _enviar_email_confirmacion(cliente, detalle_turno, especialidad, db)
                 return "principal"
@@ -152,8 +175,8 @@ async def iniciar_cobranzas(
                 logging.warning(f"[📧 COBRANZAS] Sin mail, pidiendo al cliente.")
                 await enviar_mensaje_wpp(
                     to_number,
-                    "Por último, para enviarte la confirmación del turno por mail, "
-                    "¿me podés pasar tu dirección de correo electrónico?"
+                    "Por ultimo, para enviarte la confirmacion del turno por mail, "
+                    "me podes pasar tu direccion de correo electronico?"
                 )
                 return "esperando_mail"
 
@@ -208,6 +231,8 @@ async def handler_esperando_mail(user_text: str, to_number: str, msg_id: str = N
     logging.warning(f"[ESPERANDO_MAIL] {to_number}: '{user_text}'")
     await marcar_leido_wpp(msg_id)
 
+    _lock = get_client_lock(empresa_id or "", to_number)
+    await _lock.acquire()
     texto = user_text.strip()
     db    = SessionLocal()
     try:
@@ -236,7 +261,7 @@ async def handler_esperando_mail(user_text: str, to_number: str, msg_id: str = N
             cliente.datos_extraidos = datos
             db.commit()
 
-            await enviar_mensaje_wpp(to_number, "¡Perfecto! Ya te envío la confirmación del turno a ese correo. ¡Hasta pronto!")
+            await enviar_mensaje_wpp(to_number, "Perfecto! Ya te envío la confirmación del turno a ese correo. Hasta pronto!")
 
             detalle      = datos.get("ultimo_turno", "Tu próximo turno en Clínica Abriness")
             especialidad = datos.get("especialidad_turno")
@@ -261,17 +286,18 @@ async def handler_esperando_mail(user_text: str, to_number: str, msg_id: str = N
                 await _notificar_walter_email_fallido(to_number, numero_walter)
                 await enviar_mensaje_wpp(
                     to_number,
-                    "No hay problema, te confirmamos el turno por WhatsApp. ¡Hasta pronto!"
+                    "No hay problema, te confirmamos el turno por WhatsApp. Hasta pronto!"
                 )
                 logging.warning(f"[ESPERANDO_MAIL] 3 intentos fallidos — {to_number} vuelve a principal.")
             else:
                 await enviar_mensaje_wpp(
                     to_number,
-                    "Hmm, eso no parece un email válido 🤔\n"
+                    "Hmm, eso no parece un email válido\n"
                     "Por favor enviame tu correo electrónico (ej: nombre@gmail.com)."
                 )
     finally:
         db.close()
+        _lock.release()
 
 
 async def _notificar_walter_email_fallido(telefono: str, numero_walter: str = None) -> None:

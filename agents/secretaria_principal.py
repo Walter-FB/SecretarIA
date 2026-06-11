@@ -6,7 +6,7 @@ import os
 from tools.registry import get_tools_for_empresa
 from agents.herramientas_secretarias import (
     client_claude, enviar_mensaje_wpp, marcar_leido_wpp,
-    upsert_cola_analisis, enviar_notificacion_a_walter, NUMERO_WALTER
+    enviar_notificacion_a_walter, NUMERO_WALTER, get_client_lock
 )
 
 # ===================================================================
@@ -36,6 +36,8 @@ antes de enviar a agendadora si tenes algun dato ambiguo o que te de dudas no im
 ⚠️ AGENDA: no tenés acceso al calendario — no sabés qué horarios están libres, qué días atiende quién, ni si hay lugar. Cualquier horario que menciones sin llamar iniciar_agendamiento es inventado. La única acción válida cuando el paciente pide turno es llamar iniciar_agendamiento — sin agregar texto, sin preguntar día ni hora, sin confirmar nada.
 
 RITMO: el paciente marca el ritmo. Si es directo o está apurado, sé directa: mínimas confirmaciones, derecho a la tool. Si viene charlando tranquilo, acompañalo.
+
+CONFIRMÁS UNA SOLA VEZ: cada dato se confirma como máximo una vez en toda la charla. Si el paciente ya confirmó el profesional (o lo encontraste en el sistema), NO lo volvés a preguntar: llamás iniciar_agendamiento directo. Solo confirmás de nuevo si el sistema devolvió algo DISTINTO a lo que el paciente dijo.
 
 PRECIOS: si pregunta cuánto sale, primero asegurate de tener especialidad y cobertura (si no las tenés, preguntá). Después llamá consultar_precio — la tool responde al paciente directamente, no agregues nada.
 
@@ -83,9 +85,9 @@ P: Hola, necesito turno, ya me atendí antes.
 A: Hola! dale, pasame tu DNI así te busco
 P: 12345678
 [→ verificar_paciente_existente]
-A: Ahí te encontré! sos {nombre_encontrado} con {cobertura_encontrada}, es correcto?
+A: Ahí te encontré! sos {nombre_encontrado} con {cobertura_encontrada} y {profesional_encontrado}, arranco con el turno?
 P: Sí.
-[→ iniciar_agendamiento]
+[→ iniciar_agendamiento — identidad y profesional confirmados en un solo mensaje]
 
 — Especialidad no disponible —
 P: Quiero turno con un neurólogo.
@@ -110,6 +112,7 @@ A: Entiendo que estás pasando por un momento muy difícil. Ya estoy avisando al
 - consultar_precio: cuando pregunta precios. La llamás directo, sin pedir permiso. La tool responde al paciente.
 - iniciar_cobranzas: solo si el paciente tiene turno confirmado pero nunca recibió las instrucciones de pago (la agendadora no completó el flujo). No la uses para preguntas de precio.
 - silenciar_seguimiento: cuando el paciente se despidió o cerró la charla.
+- omitir_respuesta: cuando el paciente cerró la charla o no hace falta contestar. Mejor silencio que relleno.
 - notificar_walter_urgente: emergencias, recetas, frustración real, pide humano.
 </HERRAMIENTAS>"""
 
@@ -146,6 +149,15 @@ def _build_system_prompt(cliente: Cliente, db, empresa=None) -> str:
 
     if resumen: lineas_memoria.append(f"- Contexto previo: {resumen}")
 
+    pago_estado = datos.get("pago_estado")
+    if pago_estado == "esperando_comprobante":
+        monto = datos.get("monto_pendiente", "")
+        lineas_memoria.append(f"- Turno vigente: {datos.get('ultimo_turno', '')}")
+        lineas_memoria.append(f"- Pago: esperando comprobante de ${monto}")
+    elif pago_estado == "pagado":
+        lineas_memoria.append(f"- Turno vigente: {datos.get('ultimo_turno', '')}")
+        lineas_memoria.append("- Pago: realizado")
+
     if not lineas_memoria:
         return base
 
@@ -165,6 +177,8 @@ def _build_system_prompt(cliente: Cliente, db, empresa=None) -> str:
 async def secretaria_principal(user_text: str, to_number: str, msg_id: str = None, empresa_id: str = None):
     await marcar_leido_wpp(msg_id)
 
+    _lock = get_client_lock(empresa_id or "", to_number)
+    await _lock.acquire()
     db = SessionLocal()
     try:
         # ── Cargar empresa ──────────────────────────────────────────
@@ -212,13 +226,14 @@ async def secretaria_principal(user_text: str, to_number: str, msg_id: str = Non
             .all()
         )
 
+        # Regla: usuario → siempre, sin importar m.agente.
+        # asistente → solo si es de este agente (o legacy agente=None).
         raw = []
         for m in reversed(sesion):
             if m.rol == "usuario":
                 raw.append({"role": "user", "content": m.texto})
-            elif m.agente == "principal" or m.agente is None:
+            elif m.rol == "asistente" and (m.agente == "principal" or m.agente is None):
                 raw.append({"role": "assistant", "content": m.texto})
-            # mensajes de "agendadora" se descartan
 
         # Colapsar mensajes consecutivos del mismo rol (necesario tras filtrar)
         historial = []
@@ -231,13 +246,15 @@ async def secretaria_principal(user_text: str, to_number: str, msg_id: str = Non
         historial.append({"role": "user", "content": user_text})
 
         db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="usuario", texto=user_text))
-        upsert_cola_analisis(db, cliente.id)
         db.commit()
 
         system_prompt = _build_system_prompt(cliente, db, empresa)
         definitions, handlers = get_tools_for_empresa(empresa)
 
         # ── Loop de tools (máx 4 iteraciones) ──────────────────────
+        # Tools terminales: su ejecución descarta cualquier texto_previo del turno.
+        TERMINAL_TOOLS = {"iniciar_agendamiento", "iniciar_cobranzas", "omitir_respuesta"}
+
         MAX_ITER  = 4
         derivar   = None
 
@@ -264,12 +281,14 @@ async def secretaria_principal(user_text: str, to_number: str, msg_id: str = Non
                 db.commit()
                 break
 
-            # Texto previo junto con tools → enviar antes de procesar
+            # Texto previo junto con tools → descartar si hay tool terminal, enviar si no
             if texto_bloques:
-                texto_previo = " ".join(b.text.strip() for b in texto_bloques)
-                await enviar_mensaje_wpp(to_number, texto_previo)
-                db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", agente="principal", texto=texto_previo))
-                db.commit()
+                nombres_tools = {t.name for t in tool_bloques}
+                if not (nombres_tools & TERMINAL_TOOLS):
+                    texto_previo = " ".join(b.text.strip() for b in texto_bloques)
+                    await enviar_mensaje_wpp(to_number, texto_previo)
+                    db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", agente="principal", texto=texto_previo))
+                    db.commit()
 
             if not tool_bloques:
                 break
@@ -298,8 +317,9 @@ async def secretaria_principal(user_text: str, to_number: str, msg_id: str = Non
                     "tool_use_id": tool.id,
                     "content":     resultado_str
                 })
-                if derivar_tool == "_skip_":
-                    # La tool ya mandó el mensaje directamente — no llamar a Claude de nuevo
+                if derivar_tool == "_omitir_":
+                    derivar = "_omitir_"
+                elif derivar_tool == "_skip_":
                     derivar = "_skip_"
                 elif derivar_tool:
                     derivar = derivar_tool
@@ -318,4 +338,5 @@ async def secretaria_principal(user_text: str, to_number: str, msg_id: str = Non
         import traceback; traceback.print_exc()
     finally:
         db.close()
+        _lock.release()
 

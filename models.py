@@ -77,10 +77,8 @@ class Cliente(Base):
 
     empresa      = relationship("Empresa",      back_populates="clientes")
     profesional  = relationship("Profesional",  back_populates="clientes")
-    mensajes     = relationship("Mensaje",      back_populates="cliente", cascade="all, delete-orphan")
-    cola_analisis = relationship("ColaAnalisis", back_populates="cliente", uselist=False, cascade="all, delete-orphan")
-    seguimientos = relationship("Seguimiento",  back_populates="cliente", cascade="all, delete-orphan")
-    pagos        = relationship("Pago",         back_populates="cliente", cascade="all, delete-orphan")
+    mensajes = relationship("Mensaje", back_populates="cliente", cascade="all, delete-orphan")
+    pagos    = relationship("Pago",    back_populates="cliente", cascade="all, delete-orphan")
 
 
 class Mensaje(Base):
@@ -95,28 +93,6 @@ class Mensaje(Base):
     fecha_creacion = Column(DateTime, default=datetime.datetime.utcnow)
 
     cliente = relationship("Cliente", back_populates="mensajes")
-
-
-class ColaAnalisis(Base):
-    """Clientes con conversación activa pendiente de análisis nocturno."""
-    __tablename__ = "cola_analisis"
-
-    cliente_id             = Column(String, ForeignKey("clientes.id"), primary_key=True)
-    fecha_ultima_actividad = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
-
-    cliente = relationship("Cliente", back_populates="cola_analisis")
-
-
-class Seguimiento(Base):
-    """Cola de mensajes de remarketing pendientes."""
-    __tablename__ = "seguimientos"
-
-    id               = Column(Integer, primary_key=True, index=True)
-    cliente_id       = Column(String, ForeignKey("clientes.id"))
-    estado           = Column(String, default="pendiente")  # pendiente / enviado
-    fecha_programada = Column(DateTime, nullable=False)
-
-    cliente = relationship("Cliente", back_populates="seguimientos")
 
 
 class Turno(Base):

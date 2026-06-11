@@ -1,10 +1,18 @@
+import asyncio
 import httpx
 import logging
-from models import ColaAnalisis
 from datetime import datetime
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 import os
 import anthropic
+
+# ── Lock por cliente — evita que dos mensajes del mismo número corran en paralelo
+_locks: dict[str, asyncio.Lock] = {}
+
+def get_client_lock(empresa_id: str, telefono: str) -> asyncio.Lock:
+    key = f"{empresa_id}:{telefono}"
+    if key not in _locks:
+        _locks[key] = asyncio.Lock()
+    return _locks[key]
 
 WPP_TOKEN     = os.getenv("WHATSAPP_TOKEN")
 PHONE_ID      = os.getenv("PHONE_NUMBER_ID")
@@ -15,6 +23,7 @@ client_claude = anthropic.Anthropic(api_key=CLAUDE_KEY) if CLAUDE_KEY else None
 
 
 async def enviar_mensaje_wpp(to_number: str, texto: str):
+    texto = texto.replace("¿", "").replace("¡", "").replace("**", "")
     url     = f"https://graph.facebook.com/v22.0/{PHONE_ID}/messages"
     headers = {"Authorization": f"Bearer {WPP_TOKEN}", "Content-Type": "application/json"}
     payload = {
@@ -41,18 +50,6 @@ async def marcar_leido_wpp(msg_id: str):
     except Exception:
         pass
 
-
-def upsert_cola_analisis(db, cliente_id: str):
-    stmt = pg_insert(ColaAnalisis).values(
-        cliente_id=cliente_id,
-        fecha_ultima_actividad=datetime.utcnow()
-    ).on_conflict_do_update(
-        index_elements=['cliente_id'],
-        set_={'fecha_ultima_actividad': datetime.utcnow()}
-    )
-    db.execute(stmt)
-    db.commit()
-    logging.warning(f"[COLA] Upsert cola_analisis para {cliente_id[:8]}...")
 
 
 async def enviar_notificacion_a_walter(numero_cliente: str, nombre_cliente: str, numero_walter: str = None):

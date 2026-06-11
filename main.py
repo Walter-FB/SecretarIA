@@ -81,26 +81,9 @@ app.include_router(whatsapp.router)
 app.include_router(admin.router)
 
 
-# ===================================================================
-# JOBS PROGRAMADOS — APScheduler
-# ===================================================================
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from agents.seguimiento import job_seguimiento
-
-scheduler = AsyncIOScheduler()
-
-
 @app.on_event("startup")
 async def startup_event():
-    scheduler.add_job(job_seguimiento, 'interval', minutes=5, id='seguimiento_fases_2_3')
-    scheduler.start()
-    print("[⏰ SCHEDULER] Jobs programados:")
-    print("   → Seguimiento fases 2+3: cada 5 minutos (fase 1 corre por timer por charla)")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    scheduler.shutdown()
+    print("[⏰ SCHEDULER] Sin jobs programados — seguimiento corre por timer por charla.")
 
 
 print("\n🚀 [SISTEMA] Backend de SecretarIA v2 iniciado. Tablas verificadas. Rutas conectadas.\n")

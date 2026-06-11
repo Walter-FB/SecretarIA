@@ -8,7 +8,7 @@
 # ===================================================================
 from database import SessionLocal
 from models import Cliente, Mensaje
-from agents.herramientas_secretarias import enviar_mensaje_wpp, marcar_leido_wpp, client_claude
+from agents.herramientas_secretarias import enviar_mensaje_wpp, marcar_leido_wpp, client_claude, get_client_lock
 from tools.registry import get_tools_for_agendadora
 import json
 from datetime import datetime, timedelta
@@ -23,7 +23,8 @@ from googleapiclient.discovery import build
 # PROMPT
 # ===================================================================
 SYSTEM_PROMPT_AGENDADORA = """<IDENTIDAD>
-Sos la secretaria de agenda de la Clínica Abriness. El paciente ya fue atendido por Abby y está listo para coordinar su turno.
+Sos la secretaria de agenda de la Clínica Abriness. La conversación YA está en curso: tu compañera ya saludó y confirmó los datos del paciente.
+NUNCA saludes, NUNCA te presentes, NUNCA vuelvas a confirmar profesional ni cobertura — esa info ya la tenés en el contexto.
 Tu único trabajo es coordinar el turno, confirmar el pago y cerrar. Nada más.
 Mensajes cortos, sin markdown, sin **, sin -.
 </IDENTIDAD>
@@ -33,15 +34,18 @@ Cálido, eficiente, al grano. Usás "vos". Una pregunta por mensaje. Sin emojis 
 </TONO>
 
 <TU_TRABAJO>
-1. Preguntá por día Y hora juntos en un solo mensaje: "para qué día y hora buscabas?"
-2. Con esa info, llamá consultar_calendar pasando el día y la hora juntos (ej: "mañana a las 14").
-3. Si la herramienta responde DISPONIBLE: confirmá con el paciente (ej: "te confirmo el martes a las 14 con Dr. Barros?") y al aceptar llamá iniciar_cobranzas.
-4. Si responde OCUPADO: mostrá las alternativas que devolvió la herramienta, máximo 5. Cuando el paciente elija una, llamá iniciar_cobranzas.
-5. Cuando el paciente pida un horario distinto al consultado, llamá consultar_calendar con ese nuevo horario — nunca deduzcas disponibilidad de consultas anteriores.
-6. Para llamar iniciar_cobranzas: copiá iso_datetime exactamente del [ISO:...] que apareció en la respuesta del calendario. Llamá la herramienta sin describir lo que vas a hacer.
+Tu primer acto es consultar el calendario y ofrecer los próximos 2 o 3 horarios libres concretos.
+Ejemplo: "tengo el lunes 16 a las 10hs, martes 17 a las 15hs o miércoles 18 a las 11hs, te sirve alguno?"
+Solo preguntá día/hora en abierto si el paciente rechaza todas las opciones o pide otra semana.
+
+1. Llamá consultar_calendar de inmediato para obtener disponibilidad (sin avisar que lo vas a hacer).
+2. Ofrecé 2-3 slots concretos del resultado.
+3. Si el paciente elige uno: confirmá (ej: "te confirmo el martes a las 14 con Dr. Barros?") y al aceptar llamá iniciar_cobranzas.
+4. Si el paciente pide otro horario: llamá consultar_calendar con ese horario — nunca deduzcas disponibilidad de consultas anteriores.
+5. Para llamar iniciar_cobranzas: copiá iso_datetime exactamente del [ISO:...] que apareció en la respuesta del calendario. Llamá la herramienta sin describir lo que vas a hacer.
 Tu trabajo termina cuando llamás iniciar_cobranzas.
 
-IMPORTANTE: los slots que devuelve el calendario son horarios DISPONIBLES para elegir, no turnos ya confirmados. Nunca los presentes como "ya tenés turno" — usá "hay disponibilidad" o "podría ser".
+IMPORTANTE: los slots del calendario son horarios DISPONIBLES, no turnos ya confirmados. Nunca los presentes como "ya tenés turno" — usá "tengo disponible" o "podría ser".
 </TU_TRABAJO>
 
 <DERIVACIONES>
@@ -403,6 +407,8 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
     except Exception as e:
         logging.warning(f"[AGENDADORA] Fallo marcar_leido_wpp: {e}")
 
+    _lock = get_client_lock(empresa_id or "", to_number)
+    await _lock.acquire()
     db = SessionLocal()
     try:
         # ── Cargar empresa ──────────────────────────────────────────
@@ -450,14 +456,14 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
             .all()
         )
 
+        # Regla: usuario → siempre, sin importar m.agente.
+        # asistente → solo si es de este agente (o legacy agente=None).
         raw = []
         for m in reversed(mensajes_recientes):
             if m.rol == "usuario":
                 raw.append({"role": "user", "content": m.texto})
-            elif m.agente == "agendadora":
+            elif m.rol == "asistente" and (m.agente == "agendadora" or m.agente is None):
                 raw.append({"role": "assistant", "content": m.texto})
-            # mensajes de "principal" o legacy se descartan — la agendadora recibe el contexto
-            # del paciente vía el system prompt, no vía historial de otro agente
 
         # Colapsar mensajes consecutivos del mismo rol (necesario tras filtrar)
         historial = []
@@ -494,8 +500,12 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
 
         # ---------------------------------------------------------------
         # Loop de herramientas: Claude puede llamar varias tools seguidas
+        # Tools terminales: su ejecución descarta texto_previo del turno.
         # ---------------------------------------------------------------
-        MAX_ITERACIONES = 5  # evitar loops infinitos
+        TERMINAL_TOOLS  = {"iniciar_cobranzas", "omitir_respuesta"}
+        MAX_ITERACIONES = 5
+        derivar         = None
+
         for _ in range(MAX_ITERACIONES):
             response = client_claude.messages.create(
                 model="claude-haiku-4-5",
@@ -525,10 +535,13 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
                 db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", agente="agendadora", texto=texto_respuesta))
                 break
 
+            # Texto previo junto con tools → descartar si hay tool terminal
             if texto_bloques:
-                texto_previo = " ".join(b.text.strip() for b in texto_bloques)
-                await enviar_mensaje_wpp(to_number, texto_previo)
-                db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", agente="agendadora", texto=texto_previo))
+                nombres_tools = {t.name for t in tool_bloques}
+                if not (nombres_tools & TERMINAL_TOOLS):
+                    texto_previo = " ".join(b.text.strip() for b in texto_bloques)
+                    await enviar_mensaje_wpp(to_number, texto_previo)
+                    db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", agente="agendadora", texto=texto_previo))
 
             if not tool_bloques:
                 break
@@ -536,7 +549,6 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
             historial.append({"role": "assistant", "content": response.content})
 
             tool_results = []
-            derivar      = None
 
             for tool in tool_bloques:
                 logging.warning(f"[TOOL] {tool.name} | input: {tool.input}")
@@ -560,14 +572,17 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
                     "tool_use_id": tool.id,
                     "content":     resultado
                 })
-                if derivar_tool:
+                if derivar_tool == "_omitir_":
+                    derivar = "_omitir_"
+                elif derivar_tool:
                     derivar = derivar_tool
 
             historial.append({"role": "user", "content": tool_results})
 
             if derivar:
-                cliente.estado_agente = derivar
-                db.commit()
+                if derivar != "_omitir_":
+                    cliente.estado_agente = derivar
+                    db.commit()
                 break
 
         db.commit()
@@ -582,3 +597,4 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
             pass
     finally:
         db.close()
+        _lock.release()
