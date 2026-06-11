@@ -49,7 +49,8 @@ def generar_mensaje_cobro(db, especialidad: str = None, cobertura: str = None, o
     if modalidad == "obra social" and obra_social:
         obra_social_nombre = obra_social.strip()
 
-    monto             = get_tarifa(profesional, modalidad)
+    os_nombre = obra_social_nombre or (cobertura if modalidad == "obra social" else None)
+    monto     = get_tarifa(profesional, modalidad, os_nombre)
     precio_particular = profesional.tarifa_particular if profesional else monto
     esp_display       = "Psicólogo" if (not profesional or profesional.especialidad == "psicologo") else "Psiquiatra"
     prof_nombre       = profesional.nombre if profesional else esp_display
@@ -57,10 +58,10 @@ def generar_mensaje_cobro(db, especialidad: str = None, cobertura: str = None, o
     mensaje = f"Te paso el detalle para abonar tu consulta con {prof_nombre}:\n\n"
 
     if modalidad == "obra social":
-        obra_social_nombre = obra_social_nombre or cobertura or "Obra Social"
-        descuento = precio_particular - monto
+        os_display = os_nombre or "Obra Social"
+        descuento  = precio_particular - monto
         mensaje += f"Precio de lista: ${precio_particular:,}\n"
-        mensaje += f"Descuento {obra_social_nombre}: -${descuento:,}\n"
+        mensaje += f"Descuento {os_display}: -${descuento:,}\n"
         mensaje += f"Total a pagar: ${monto:,}\n\n"
     else:
         mensaje += f"Total a pagar: ${monto:,}\n\n"
@@ -176,11 +177,11 @@ async def _enviar_email_confirmacion(cliente: Cliente, detalle_turno: str, espec
         prof  = _resolver_profesional(db, especialidad or datos.get("especialidad_turno"), cliente.empresa_id)
         esp   = prof.especialidad if prof else _normalizar_especialidad(especialidad)
 
-        cobertura  = cliente.obra_social or "particular"
-        modalidad, _ = _normalizar_cobertura(cobertura)
-        monto        = get_tarifa(prof, modalidad)
-        precio_lista = prof.tarifa_particular if prof else monto
-        descuento    = (precio_lista - monto) if modalidad == "obra social" else None
+        cobertura          = cliente.obra_social or "particular"
+        modalidad, os_nombre = _normalizar_cobertura(cobertura)
+        monto              = get_tarifa(prof, modalidad, os_nombre)
+        precio_lista       = prof.tarifa_particular if prof else monto
+        descuento          = (precio_lista - monto) if modalidad == "obra social" else None
 
         logging.warning(f"[📧 MAIL] Preparando envío a {cliente.mail} | nombre={cliente.nombre_completo} | monto={monto}")
         ok = await enviar_mail_confirmacion(

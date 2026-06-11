@@ -34,7 +34,8 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
         return "Sin info de precios.", None
 
     modalidad, nombre_os = _normalizar_cobertura(cobertura)
-    monto             = get_tarifa(profesional, modalidad)
+    os_nombre         = nombre_os or (cobertura if modalidad == "obra social" else None)
+    monto             = get_tarifa(profesional, modalidad, os_nombre)
     precio_particular = profesional.tarifa_particular
 
     tiene_datos = bool(cliente.nombre_completo and cliente.dni)
@@ -44,9 +45,17 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
         return f"{n:,}".replace(",", ".")
 
     if modalidad == "obra social":
-        nombre_os   = nombre_os or cobertura
+        os_display  = os_nombre or cobertura
         esp_display = "psicología" if profesional.especialidad == "psicologo" else "psiquiatría"
-        mensaje = f"Con {nombre_os} la consulta de {esp_display} ({profesional.nombre}) sale ${_fmt(monto)}."
+        if monto < precio_particular:
+            descuento_pct = round((1 - monto / precio_particular) * 100)
+            mensaje = (
+                f"La consulta de {esp_display} con {profesional.nombre} tiene un precio de lista de ${_fmt(precio_particular)}. "
+                f"Gracias a tu cobertura ({os_display}) tenés un {descuento_pct}% de descuento, "
+                f"así que te queda en ${_fmt(monto)}."
+            )
+        else:
+            mensaje = f"Con {os_display} la consulta de {esp_display} ({profesional.nombre}) sale ${_fmt(monto)}."
     else:
         mensaje = f"La consulta con {profesional.nombre} es de ${_fmt(monto)}."
 

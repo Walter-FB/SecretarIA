@@ -51,23 +51,38 @@ def get_calendar_id(profesional: Profesional | None) -> str:
     return calendar_id
 
 
-def get_tarifa(profesional: Profesional | None, modalidad: str) -> int:
+def get_tarifa(profesional: Profesional | None, modalidad: str, obra_social_nombre: str = None) -> int:
     """
     Devuelve la tarifa según la modalidad ('particular' u 'obra social').
+    Si hay obra_social_nombre y el profesional tiene descuentos configurados,
+    aplica el % de descuento sobre tarifa_particular.
     Si no hay profesional, usa los valores hardcodeados de fallback.
     """
     modalidad_norm = (modalidad or "particular").strip().lower()
 
     if profesional:
         if "obra" in modalidad_norm or "social" in modalidad_norm:
+            descuentos = profesional.descuentos_obras_sociales or {}
+            if obra_social_nombre and descuentos:
+                clave = _normalizar_nombre_os(obra_social_nombre)
+                porcentaje = next(
+                    (v for k, v in descuentos.items() if _normalizar_nombre_os(k) == clave),
+                    None
+                )
+                if porcentaje is not None:
+                    return round(profesional.tarifa_particular * (1 - porcentaje / 100))
             return profesional.tarifa_obra_social
         return profesional.tarifa_particular
 
-    # Fallback si por alguna razón no hay profesional en contexto
     logging.warning("[⚠️ TARIFAS] get_tarifa llamado sin profesional — usando fallback hardcodeado")
     FALLBACK = {"psicologo": {"particular": 30000, "obra social": 19000},
                 "psiquiatra": {"particular": 80000, "obra social": 45000}}
     return FALLBACK.get("psicologo", {}).get(modalidad_norm, 30000)
+
+
+def _normalizar_nombre_os(nombre: str) -> str:
+    import unicodedata
+    return unicodedata.normalize("NFKD", nombre).encode("ascii", "ignore").decode().lower().strip()
 
 
 def _normalizar_especialidad(texto: str) -> str:

@@ -43,8 +43,9 @@ class Profesional(Base):
     especialidad       = Column(String, nullable=False)   # "psicologo", "psiquiatra"
     tarifa_particular  = Column(Integer, nullable=False)
     tarifa_obra_social = Column(Integer, nullable=False)
-    calendar_id        = Column(String, nullable=True)    # null → usa env var CALENDAR_ID
-    activo             = Column(Boolean, default=True)
+    calendar_id                = Column(String, nullable=True)    # null → usa env var CALENDAR_ID
+    activo                     = Column(Boolean, default=True)
+    descuentos_obras_sociales  = Column(JSON, nullable=True)      # {"OSBA": 30, "Galeno": 20} — % descuento sobre tarifa_particular
 
     empresa   = relationship("Empresa",  back_populates="profesionales")
     clientes  = relationship("Cliente",  back_populates="profesional")

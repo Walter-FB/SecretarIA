@@ -56,18 +56,22 @@ def seed_profesionales():
     """Crea los profesionales de Clínica Abriness si no existen."""
     db = SessionLocal()
     try:
+        # OSBA 30% / Galeno 20% sobre tarifa_particular. IOMA, OSDE, Swiss Medical, Médicus → tarifa_obra_social.
+        DESCUENTOS = {"OSBA": 30, "Galeno": 20}
         profesionales_data = [
             {
                 "nombre":             "Lic. Renals",
                 "especialidad":       "psicologo",
                 "tarifa_particular":  30000,
                 "tarifa_obra_social": 19000,
+                "descuentos_obras_sociales": DESCUENTOS,
             },
             {
                 "nombre":             "Dr. Barros",
                 "especialidad":       "psiquiatra",
                 "tarifa_particular":  80000,
                 "tarifa_obra_social": 45000,
+                "descuentos_obras_sociales": DESCUENTOS,
             },
         ]
         for datos in profesionales_data:
@@ -76,20 +80,27 @@ def seed_profesionales():
                 Profesional.empresa_id == EMPRESA_DEFAULT_ID
             ).first()
             if existe:
+                updated = False
                 if existe.calendar_id is None:
                     existe.calendar_id = "empresa"
-                    print(f"[OK] Profesional '{datos['nombre']}': calendar_id → 'empresa'.")
+                    updated = True
+                if existe.descuentos_obras_sociales is None:
+                    existe.descuentos_obras_sociales = datos["descuentos_obras_sociales"]
+                    updated = True
+                if updated:
+                    print(f"[OK] Profesional '{datos['nombre']}': campos actualizados.")
                 else:
                     print(f"[OK] Profesional '{datos['nombre']}' ya existe.")
                 continue
             prof = Profesional(
-                empresa_id         = EMPRESA_DEFAULT_ID,
-                nombre             = datos["nombre"],
-                especialidad       = datos["especialidad"],
-                tarifa_particular  = datos["tarifa_particular"],
-                tarifa_obra_social = datos["tarifa_obra_social"],
-                calendar_id        = "empresa",
-                activo             = True,
+                empresa_id                = EMPRESA_DEFAULT_ID,
+                nombre                    = datos["nombre"],
+                especialidad              = datos["especialidad"],
+                tarifa_particular         = datos["tarifa_particular"],
+                tarifa_obra_social        = datos["tarifa_obra_social"],
+                descuentos_obras_sociales = datos["descuentos_obras_sociales"],
+                calendar_id               = "empresa",
+                activo                    = True,
             )
             db.add(prof)
             print(f"[OK] Profesional '{datos['nombre']}' creado.")
