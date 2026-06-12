@@ -13,14 +13,5 @@ DEFINITION = {
 
 async def handler(tool_input, cliente, session, empresa, scope=None):
     from agents.seguimiento import cancelar_timer
-    from models import Seguimiento
-
     cancelar_timer(str(cliente.id))
-
-    session.query(Seguimiento).filter(
-        Seguimiento.cliente_id == cliente.id,
-        Seguimiento.estado.in_(["esperando_respuesta", "pendiente"])
-    ).delete(synchronize_session=False)
-    session.commit()
-
     return "Seguimiento cancelado.", None
