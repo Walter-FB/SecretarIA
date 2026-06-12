@@ -8,6 +8,7 @@ from tools import (
     volver_secretaria_principal,
     consultar_precio,
     silenciar_seguimiento,
+    omitir_respuesta,
 )
 
 # Catálogo completo. Cada entrada: nombre → módulo con DEFINITION y handler.
@@ -21,6 +22,7 @@ TOOL_CATALOG = {
     "volver_secretaria_principal":  volver_secretaria_principal,
     "consultar_precio":             consultar_precio,
     "silenciar_seguimiento":        silenciar_seguimiento,
+    "omitir_respuesta":             omitir_respuesta,
 }
 
 
@@ -62,6 +64,7 @@ def get_tools_for_agendadora(empresa=None):
         "iniciar_cobranzas",
         "volver_secretaria_principal",
         "notificar_walter_urgente",
+        "omitir_respuesta",
     ]
     definitions = [TOOL_CATALOG[n].DEFINITION for n in names if n in TOOL_CATALOG]
     handlers    = {n: TOOL_CATALOG[n].handler for n in names if n in TOOL_CATALOG}

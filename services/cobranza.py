@@ -10,7 +10,7 @@ from services.profesionales import (
     _normalizar_especialidad,
 )
 from database import SessionLocal
-from models import Cliente
+from models import Cliente, Mensaje
 
 _EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
 
@@ -75,8 +75,8 @@ def generar_mensaje_cobro(db, especialidad: str = None, cobertura: str = None, o
     mensaje += "Datos para transferir:\n"
     mensaje += f"• Alias: {alias}\n"
     mensaje += f"• Titular: {titular}\n"
-    mensaje += f"• CVU: {cvu}\n\n"
-    mensaje += "Una vez hecha la transferencia, mandanos el comprobante por este chat. ¡Gracias!"
+    if cvu:
+        mensaje += f"• CVU: {cvu}\n"
 
     return mensaje
 
@@ -96,7 +96,6 @@ async def iniciar_cobranzas(
     logging.warning(f"[COBRANZAS] {to_number} | esp={especialidad} | cob={cobertura} | turno={detalle_turno}")
     db = SessionLocal()
     try:
-        # ── Cargar empresa ──────────────────────────────────────────
         from models import Empresa
         empresa = None
         if empresa_id:
@@ -111,20 +110,15 @@ async def iniciar_cobranzas(
             Cliente.empresa_id == empresa_id
         ).first()
 
-        # Completar cobertura desde BD si no llegó por parámetro
         if cliente and not cobertura:
             cobertura = cliente.obra_social
-            logging.warning(f"[💸 COBRANZAS] Cobertura tomada de BD: {cobertura}")
-
-        # Completar especialidad desde profesional_id si no llegó por parámetro
         if cliente and not especialidad and cliente.profesional_id:
             from models import Profesional
             prof = db.query(Profesional).filter(Profesional.id == cliente.profesional_id).first()
             if prof:
                 especialidad = prof.nombre
-                logging.warning(f"[💸 COBRANZAS] Especialidad tomada de profesional del cliente: {especialidad}")
 
-        # Guardar detalle de turno para el email de confirmación
+        # Guardar detalle de turno para el email
         if cliente and detalle_turno:
             datos = dict(cliente.datos_extraidos or {})
             prof  = _resolver_profesional(db, especialidad, empresa_id)
@@ -132,29 +126,50 @@ async def iniciar_cobranzas(
             datos["especialidad_turno"] = prof.especialidad if prof else _normalizar_especialidad(especialidad)
             cliente.datos_extraidos = datos
             db.commit()
-            logging.warning(f"[💸 COBRANZAS] Turno guardado: {detalle_turno}")
 
-        mensaje = generar_mensaje_cobro(db, especialidad, cobertura, obra_social, empresa)
-        await enviar_mensaje_wpp(to_number, mensaje)
+        # Mensaje con precio + alias
+        mensaje_cobro = generar_mensaje_cobro(db, especialidad, cobertura, obra_social, empresa)
+        await enviar_mensaje_wpp(to_number, mensaje_cobro)
         logging.warning(f"[COBRANZAS] Mensaje de cobro enviado a {to_number}")
+
+        # Template de cierre con info del turno
+        if detalle_turno and cliente:
+            nombre = (cliente.nombre_completo or "Paciente").split()[0]
+            info_turno = (
+                detalle_turno
+                .replace("Turno reservado el ", "")
+                .split(". Link:")[0]
+                .rstrip(".")
+            )
+            template = (
+                f"Gracias {nombre}! quedaste agendado/a para el {info_turno}. "
+                f"Cualquier consulta estamos acá 😊"
+            )
+            await enviar_mensaje_wpp(to_number, template)
+            db.add(Mensaje(
+                cliente_id = cliente.id,
+                empresa_id = empresa_id,
+                rol        = "asistente",
+                agente     = "cobranzas",
+                texto      = template,
+            ))
+            db.commit()
+            logging.warning(f"[COBRANZAS] Template de cierre enviado")
 
         nombre        = (cliente.nombre_completo if cliente else None) or "un paciente"
         numero_walter = empresa.numero_walter if empresa else None
         await enviar_notificacion_a_walter(to_number, nombre, numero_walter)
-        logging.warning(f"[COBRANZAS] Walter notificado")
 
         # Email: solo si hay turno confirmado
         if detalle_turno:
             if cliente and cliente.mail:
-                logging.warning(f"[📧 COBRANZAS] Mail ya registrado ({cliente.mail}), enviando confirmación.")
                 await _enviar_email_confirmacion(cliente, detalle_turno, especialidad, db)
                 return "principal"
             else:
-                logging.warning(f"[📧 COBRANZAS] Sin mail, pidiendo al cliente.")
                 await enviar_mensaje_wpp(
                     to_number,
                     "Por último, para enviarte la confirmación del turno por mail, "
-                    "¿me podés pasar tu dirección de correo electrónico?"
+                    "me pasas tu dirección de correo electrónico?"
                 )
                 return "esperando_mail"
 
@@ -237,11 +252,10 @@ async def handler_esperando_mail(user_text: str, to_number: str, msg_id: str = N
             cliente.datos_extraidos = datos
             db.commit()
 
-            await enviar_mensaje_wpp(to_number, "¡Perfecto! Ya te envío la confirmación del turno a ese correo. ¡Hasta pronto!")
+            await enviar_mensaje_wpp(to_number, "Perfecto! Ya te envío la confirmación del turno a ese correo. Hasta pronto!")
 
             detalle      = datos.get("ultimo_turno", "Tu próximo turno en Clínica Abriness")
             especialidad = datos.get("especialidad_turno")
-            logging.warning(f"[ESPERANDO_MAIL] Disparando email | detalle={detalle}")
             await _enviar_email_confirmacion(cliente, detalle, especialidad, db)
 
         else:
@@ -262,13 +276,13 @@ async def handler_esperando_mail(user_text: str, to_number: str, msg_id: str = N
                 await _notificar_walter_email_fallido(to_number, numero_walter)
                 await enviar_mensaje_wpp(
                     to_number,
-                    "No hay problema, te confirmamos el turno por WhatsApp. ¡Hasta pronto!"
+                    "No hay problema, te confirmamos el turno por WhatsApp. Hasta pronto!"
                 )
                 logging.warning(f"[ESPERANDO_MAIL] 3 intentos fallidos — {to_number} vuelve a principal.")
             else:
                 await enviar_mensaje_wpp(
                     to_number,
-                    "Hmm, eso no parece un email válido 🤔\n"
+                    "Hmm, eso no parece un email válido.\n"
                     "Por favor enviame tu correo electrónico (ej: nombre@gmail.com)."
                 )
     finally:

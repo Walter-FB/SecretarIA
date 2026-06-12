@@ -39,8 +39,6 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     if profesional:
         usar_local = profesional.calendar_id is None
 
-    await enviar_mensaje_wpp(cliente.telefono, "Reviso la agenda... un momento.")
-
     if usar_local:
         resultado = _consultar_calendar_local(
             texto_fecha   = tool_input.get("texto_fecha", "hoy"),

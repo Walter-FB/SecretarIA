@@ -1,10 +1,5 @@
 # ===================================================================
-# SECRETARIA AGENDADORA — versión corregida
-# Fixes:
-#   1. Loop de tool_use/tool_result correcto (Claude recibe el resultado
-#      del calendario y puede formular una respuesta natural)
-#   2. Autenticación Google via Service Account (sin OAuth interactivo,
-#      funciona en Railway/producción sin navegador)
+# SECRETARIA AGENDADORA
 # ===================================================================
 from database import SessionLocal
 from models import Cliente, Mensaje
@@ -23,7 +18,7 @@ from googleapiclient.discovery import build
 # PROMPT
 # ===================================================================
 SYSTEM_PROMPT_AGENDADORA = """<IDENTIDAD>
-Sos la secretaria de agenda de la Clínica Abriness. El paciente ya fue atendido por Abby y está listo para coordinar su turno.
+Sos la secretaria de agenda de la Clínica Abriness. La conversación YA está en curso: tu compañera ya saludó y confirmó los datos del paciente. NUNCA saludes, NUNCA te presentes, NUNCA vuelvas a confirmar profesional ni cobertura.
 Tu único trabajo es coordinar el turno, confirmar el pago y cerrar. Nada más.
 Mensajes cortos, sin markdown, sin **, sin -.
 </IDENTIDAD>
@@ -33,11 +28,11 @@ Cálido, eficiente, al grano. Usás "vos". Una pregunta por mensaje. Sin emojis 
 </TONO>
 
 <TU_TRABAJO>
-1. Preguntá por día Y hora juntos en un solo mensaje: "para qué día y hora buscabas?"
-2. Con esa info, llamá consultar_calendar pasando el día y la hora juntos (ej: "mañana a las 14").
-3. Si la herramienta responde DISPONIBLE: confirmá con el paciente (ej: "te confirmo el martes a las 14 con Dr. Barros?") y al aceptar llamá iniciar_cobranzas.
-4. Si responde OCUPADO: mostrá las alternativas que devolvió la herramienta, máximo 5. Cuando el paciente elija una, llamá iniciar_cobranzas.
-5. Cuando el paciente pida un horario distinto al consultado, llamá consultar_calendar con ese nuevo horario — nunca deduzcas disponibilidad de consultas anteriores.
+1. Tu primer acto es llamar a consultar_calendar con texto_fecha="mañana" y dias_a_consultar=3. Esto te da los próximos horarios libres disponibles.
+2. Ofrecé los próximos 2 o 3 horarios concretos directamente: "tengo lunes 12hs, martes 10hs o miércoles 15hs, te sirve alguno?". Solo preguntá día/hora en abierto si el paciente rechaza todas las opciones o pide otra semana.
+3. Si el paciente elige un horario de los ofrecidos: confirmá brevemente ("te confirmo el martes a las 14 con Dr. Barros?") y al aceptar llamá iniciar_cobranzas.
+4. Si el horario pedido está DISPONIBLE: confirmá con el paciente y al aceptar llamá iniciar_cobranzas.
+5. Si está OCUPADO: mostrá las alternativas que devolvió la herramienta, máximo 5. Cuando el paciente elija una, llamá iniciar_cobranzas.
 6. Para llamar iniciar_cobranzas: copiá iso_datetime exactamente del [ISO:...] que apareció en la respuesta del calendario. Llamá la herramienta sin describir lo que vas a hacer.
 Tu trabajo termina cuando llamás iniciar_cobranzas.
 
@@ -48,6 +43,7 @@ IMPORTANTE: los slots que devuelve el calendario son horarios DISPONIBLES para e
 PACIENTE CONFIRMA TURNO → llamá iniciar_cobranzas como herramienta (NO como texto). Pasás dia, hora, profesional e iso_datetime.
 TEMA SE DESVÍA → volver_secretaria_principal
 EMERGENCIA O CRISIS → notificar_walter_urgente (es_emergencia: true)
+PACIENTE CERRÓ LA CHARLA → omitir_respuesta
 </DERIVACIONES>
 
 <EMERGENCIA>
@@ -59,34 +55,27 @@ Si detectás crisis o urgencia emocional:
 
 
 # ===================================================================
-# GOOGLE CALENDAR — Service Account (no necesita OAuth interactivo)
+# GOOGLE CALENDAR — Service Account
 # ===================================================================
 SCOPES        = ['https://www.googleapis.com/auth/calendar.events',
                  'https://www.googleapis.com/auth/calendar.readonly']
 TIMEZONE      = ZoneInfo('America/Argentina/Buenos_Aires')
 HORA_APERTURA = 9
 HORA_CIERRE   = 18
-DIAS_BLOQUEO_MEDIODIA = {0, 1, 2}  # lunes, martes, miercoles
-HORA_BLOQUEO_INICIO = 13
-HORA_BLOQUEO_FIN    = 17
+
+# Tools que cortan el loop
+_TERMINAL_TOOLS = {"iniciar_cobranzas", "omitir_respuesta"}
 
 
 def _build_calendar_service():
     sa_json = os.getenv('GOOGLE_SERVICE_ACCOUNT')
     if not sa_json:
-        logging.warning("❌ [CALENDAR ERROR]: La variable GOOGLE_SERVICE_ACCOUNT está vacía o no existe en Railway.")
-        raise EnvironmentError(
-            "Falta la variable de entorno GOOGLE_SERVICE_ACCOUNT. "
-            "Pegá el JSON completo de la service account en Railway."
-        )
-    
+        raise EnvironmentError("Falta la variable de entorno GOOGLE_SERVICE_ACCOUNT.")
     try:
         info = json.loads(sa_json)
     except json.JSONDecodeError as e:
-        logging.warning(f"❌ [CALENDAR ERROR]: El JSON de la Service Account tiene un error de formato: {e}")
-        logging.warning(f"Contenido recibido (primeros 50 caracteres): {sa_json[:50]}...")
+        logging.warning(f"❌ [CALENDAR ERROR]: JSON de Service Account inválido: {e}")
         raise
-
     try:
         creds = Credentials.from_service_account_info(info, scopes=SCOPES)
         return build('calendar', 'v3', credentials=creds, cache_discovery=False)
@@ -103,7 +92,6 @@ def _normalize(text: str) -> str:
 
 
 def _parse_fecha(texto: str):
-    """Devuelve date o None. Solo parsea la fecha, ignora la hora."""
     t = _normalize(
         texto.lower()
         .replace('pasado mañana', '__pm__')
@@ -154,19 +142,13 @@ def _parse_fecha(texto: str):
 
 
 def _parse_hora(texto: str) -> int | None:
-    """
-    Devuelve la hora como entero (0-23) o None si el texto no tiene hora explícita.
-    Maneja: "13", "1 pm", "13:30", "a las 9", "9hs".
-    """
     t = texto.lower()
 
-    # HH:MM explícito — tiene prioridad
     m = re.search(r'\b(\d{1,2}):(\d{2})\b', t)
     if m:
         h = int(m.group(1))
         return h + 12 if 'pm' in t and h < 12 else h
 
-    # "a las N" o "las N"
     m = re.search(r'(?:a\s+las?|las?)\s+(\d{1,2})', t)
     if m:
         h = int(m.group(1))
@@ -174,14 +156,12 @@ def _parse_hora(texto: str) -> int | None:
         if 'am' in t and h == 12: h = 0
         return h
 
-    # Número pegado a "hs" o "h" — "9hs", "13h"
     m = re.search(r'\b(\d{1,2})\s*hs?\b', t)
     if m:
         h = int(m.group(1))
         if 'pm' in t and h < 12: h += 12
         return h
 
-    # Número suelto con "am"/"pm" explícito — "1 pm", "9am"
     m = re.search(r'\b(\d{1,2})\s*(am|pm)\b', t)
     if m:
         h = int(m.group(1))
@@ -199,15 +179,21 @@ def _slots_disponibles(
     hora_pedida: int | None,
 ) -> list[datetime]:
     """
-    Devuelve hasta 4 slots libres de 1h entre HORA_APERTURA y HORA_CIERRE.
-    El primer día arranca desde hora_pedida si se especificó; días siguientes desde HORA_APERTURA.
+    Devuelve hasta 12 slots libres de 1h entre HORA_APERTURA y HORA_CIERRE.
+    Solo lunes a viernes.
     """
     MAX_SLOTS = 12
     slots  = []
     cursor = desde
 
     while cursor < hasta and len(slots) < MAX_SLOTS:
-        dia      = cursor.date()
+        dia = cursor.date()
+
+        # Solo lunes a viernes (weekday 0-4)
+        if dia.weekday() >= 5:
+            cursor = (cursor + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            continue
+
         apertura = cursor.replace(hour=HORA_APERTURA, minute=0, second=0, microsecond=0)
         cierre   = cursor.replace(hour=HORA_CIERRE,   minute=0, second=0, microsecond=0)
 
@@ -218,10 +204,7 @@ def _slots_disponibles(
         slot = apertura
         while slot + timedelta(hours=1) <= cierre and len(slots) < MAX_SLOTS:
             fin   = slot + timedelta(hours=1)
-            libre = (
-                not _bloqueado_por_regla_horaria(slot, fin)
-                and not any(fin > bs and slot < be for bs, be in busy_ranges)
-            )
+            libre = not any(fin > bs and slot < be for bs, be in busy_ranges)
             if libre:
                 slots.append(slot)
             slot += timedelta(hours=1)
@@ -231,18 +214,7 @@ def _slots_disponibles(
     return slots
 
 
-def _bloqueado_por_regla_horaria(start: datetime, end: datetime) -> bool:
-    """Bloquea turnos de lunes a miercoles entre 13:00 y 17:00."""
-    if start.weekday() not in DIAS_BLOQUEO_MEDIODIA:
-        return False
-
-    inicio_bloqueo = start.replace(hour=HORA_BLOQUEO_INICIO, minute=0, second=0, microsecond=0)
-    fin_bloqueo = start.replace(hour=HORA_BLOQUEO_FIN, minute=0, second=0, microsecond=0)
-    return end > inicio_bloqueo and start < fin_bloqueo
-
-
 def _slots_ocupados_local(db, profesional_id: str, fecha_inicio: datetime, fecha_fin: datetime) -> list:
-    """Rangos ocupados desde tabla turnos para motor local."""
     from models import Turno
     fi = fecha_inicio.replace(tzinfo=None)
     ff = fecha_fin.replace(tzinfo=None)
@@ -256,12 +228,11 @@ def _slots_ocupados_local(db, profesional_id: str, fecha_inicio: datetime, fecha
 
 
 def _consultar_calendar_local(texto_fecha: str, dias: int = 1, profesional_id: str = None, db=None) -> str:
-    """Motor local — disponibilidad desde tabla turnos."""
     fecha       = _parse_fecha(texto_fecha)
     hora_pedida = _parse_hora(texto_fecha)
 
     if fecha is None:
-        return "No entendí la fecha. ¿Podés decirme el día?"
+        return "No entendí la fecha. Podés decirme el día?"
 
     fecha_inicio = datetime(fecha.year, fecha.month, fecha.day, HORA_APERTURA, 0, tzinfo=TIMEZONE)
     time_max     = fecha_inicio + timedelta(days=max(dias, 1))
@@ -270,29 +241,25 @@ def _consultar_calendar_local(texto_fecha: str, dias: int = 1, profesional_id: s
     if hora_pedida is not None:
         start = datetime(fecha.year, fecha.month, fecha.day, hora_pedida, 0, tzinfo=TIMEZONE)
         end   = start + timedelta(hours=1)
-        libre = (
-            not _bloqueado_por_regla_horaria(start, end)
-            and not any(end > bs and start < be for bs, be in busy_ranges)
-        )
+        libre = not any(end > bs and start < be for bs, be in busy_ranges)
         label = start.strftime('%A %d/%m a las %H:%M').capitalize()
         if libre:
             return f"El horario solicitado está DISPONIBLE.\n- {label} [ISO:{start.isoformat()}]"
         alternativas = _slots_disponibles(fecha_inicio, time_max, busy_ranges, None)
         if not alternativas:
             return (f"El horario solicitado está OCUPADO y no hay más disponibilidad el "
-                    f"{fecha.strftime('%d/%m')}. ¿Querés otro día?")
+                    f"{fecha.strftime('%d/%m')}. Querés otro día?")
         lineas = [f"- {s.strftime('%A %d/%m a las %H:%M').capitalize()} [ISO:{s.isoformat()}]" for s in alternativas]
         return "El horario solicitado está OCUPADO. Alternativas disponibles:\n" + "\n".join(lineas)
 
     slots = _slots_disponibles(fecha_inicio, time_max, busy_ranges, hora_pedida)
     if not slots:
-        return f"No hay disponibilidad el {fecha.strftime('%d/%m')}. ¿Querés que busque en otra fecha?"
+        return f"No hay disponibilidad el {fecha.strftime('%d/%m')}. Querés que busque en otra fecha?"
     lineas = [f"- {s.strftime('%A %d/%m a las %H:%M').capitalize()} [ISO:{s.isoformat()}]" for s in slots]
     return "Turnos disponibles:\n" + "\n".join(lineas)
 
 
 def _consultar_calendar(texto_fecha: str, dias: int = 1, calendar_id: str = None) -> str:
-    """Devuelve texto con los slots disponibles para pasarle a Claude."""
     if not calendar_id:
         calendar_id = os.getenv("CALENDAR_ID", "primary")
     try:
@@ -300,7 +267,7 @@ def _consultar_calendar(texto_fecha: str, dias: int = 1, calendar_id: str = None
         hora_pedida = _parse_hora(texto_fecha)
 
         if fecha is None:
-            return "No entendí la fecha. ¿Podés decirme el día?"
+            return "No entendí la fecha. Podés decirme el día?"
 
         fecha_inicio = datetime(fecha.year, fecha.month, fecha.day,
                                 HORA_APERTURA, 0, tzinfo=TIMEZONE)
@@ -321,31 +288,26 @@ def _consultar_calendar(texto_fecha: str, dias: int = 1, calendar_id: str = None
             for b in busy_raw
         ]
 
-        # Modo Preciso: el paciente pidió un horario específico
         if hora_pedida is not None:
             start = datetime(fecha.year, fecha.month, fecha.day, hora_pedida, 0, tzinfo=TIMEZONE)
             end   = start + timedelta(hours=1)
-            libre = (
-                not _bloqueado_por_regla_horaria(start, end)
-                and not any(end > bs and start < be for bs, be in busy_ranges)
-            )
+            libre = not any(end > bs and start < be for bs, be in busy_ranges)
             label = start.strftime('%A %d/%m a las %H:%M').capitalize()
             if libre:
                 return f"El horario solicitado está DISPONIBLE.\n- {label} [ISO:{start.isoformat()}]"
             alternativas = _slots_disponibles(fecha_inicio, time_max, busy_ranges, None)
             if not alternativas:
                 return (f"El horario solicitado está OCUPADO y no hay más disponibilidad el "
-                        f"{fecha.strftime('%d/%m')}. ¿Querés otro día?")
+                        f"{fecha.strftime('%d/%m')}. Querés otro día?")
             lineas = [f"- {s.strftime('%A %d/%m a las %H:%M').capitalize()} [ISO:{s.isoformat()}]"
                       for s in alternativas]
             return "El horario solicitado está OCUPADO. Alternativas disponibles:\n" + "\n".join(lineas)
 
-        # Modo Amplio: sin hora, muestra primeros 4 slots disponibles
         slots = _slots_disponibles(fecha_inicio, time_max, busy_ranges, None)
 
         if not slots:
             return (f"No hay disponibilidad el {fecha.strftime('%d/%m')}. "
-                    f"¿Querés que busque en otra fecha?")
+                    f"Querés que busque en otra fecha?")
 
         lineas = [
             f"- {s.strftime('%A %d/%m a las %H:%M').capitalize()} [ISO:{s.isoformat()}]"
@@ -356,14 +318,12 @@ def _consultar_calendar(texto_fecha: str, dias: int = 1, calendar_id: str = None
     except Exception as e:
         logging.warning(f"[❌ CALENDAR ERROR]: {e}")
         import traceback; traceback.print_exc()
-        return "Hubo un problema consultando la agenda. ¿Podés intentar con otra fecha?"
+        return "Hubo un problema consultando la agenda. Podés intentar con otra fecha?"
 
 
 def _is_busy(service, start: datetime, end: datetime, calendar_id: str = None) -> bool:
     if not calendar_id:
         calendar_id = os.getenv("CALENDAR_ID", "primary")
-    if _bloqueado_por_regla_horaria(start, end):
-        return True
     busy = service.freebusy().query(body={
         'timeMin':  start.isoformat(),
         'timeMax':  end.isoformat(),
@@ -394,10 +354,46 @@ def _crear_evento(service, titulo: str, start: datetime, end: datetime, descripc
 
 
 # ===================================================================
+# HISTORIAL — mismas 4 reglas que la principal
+# ===================================================================
+def _build_historial(sesion: list, agente_actual: str) -> list:
+    raw = []
+    for m in reversed(sesion):
+        if m.agente == "sistema":
+            continue
+        if m.rol == "usuario":
+            raw.append({"role": "user", "content": m.texto})
+        elif m.rol == "asistente" and (m.agente == agente_actual or m.agente is None):
+            raw.append({"role": "assistant", "content": m.texto})
+        elif m.rol == "asistente" and m.agente:
+            raw.append({"role": "user", "content": f"[mensaje que {m.agente} le envió al paciente]: {m.texto}"})
+
+    historial = []
+    for msg in raw:
+        if historial and historial[-1]["role"] == msg["role"]:
+            historial[-1]["content"] += "\n" + msg["content"]
+        else:
+            historial.append({"role": msg["role"], "content": msg["content"]})
+    return historial
+
+
+# ===================================================================
 # FUNCIÓN PRINCIPAL
 # ===================================================================
-async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = None, empresa_id: str = None):
-    """Loop: Claude llama tool → ejecutamos → devolvemos tool_result → Claude responde."""
+async def secretaria_agendadora(
+    user_text: str,
+    to_number: str,
+    msg_id: str = None,
+    empresa_id: str = None,
+    _store_as_sistema: bool = False,
+    _seguimiento: str = None,
+):
+    """
+    Loop: Claude llama tool → ejecutamos → devolvemos tool_result → Claude responde.
+
+    _store_as_sistema: el mensaje de user_text se guarda con agente='sistema' (no contamina historial).
+    _seguimiento: instrucción de seguimiento inyectada al system prompt, sin guardarse en BD.
+    """
     try:
         await marcar_leido_wpp(msg_id)
     except Exception as e:
@@ -405,7 +401,6 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
 
     db = SessionLocal()
     try:
-        # ── Cargar empresa ──────────────────────────────────────────
         from models import Empresa
         empresa = None
         if empresa_id:
@@ -418,7 +413,6 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
         calendar_id = (empresa.calendar_id if empresa and empresa.calendar_id
                        else os.getenv("CALENDAR_ID", "primary"))
 
-        # ── Cargar / crear cliente ──────────────────────────────────
         cliente = db.query(Cliente).filter(
             Cliente.telefono == to_number,
             Cliente.empresa_id == empresa_id
@@ -432,12 +426,7 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
 
         logging.warning(f"[AGENDADORA] {to_number} | empresa={empresa_id} | cal={calendar_id}")
 
-        cliente.mensajes_enviados += 1
-        logging.warning(f"\n[AGENDADORA - {to_number}]: {user_text}")
-
-        # ── Historial reciente (últimas 6 horas, máx 30 mensajes) ───────────
-        # Solo se incluyen mensajes del usuario + mensajes de ESTE agente ("agendadora").
-        # Los mensajes de la secretaria principal se excluyen para evitar mezcla de contexto y roles.
+        # Historial últimas 6 horas (máx 40 mensajes)
         hace_6h = datetime.utcnow() - timedelta(hours=6)
         mensajes_recientes = (
             db.query(Mensaje)
@@ -450,28 +439,28 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
             .all()
         )
 
-        raw = []
-        for m in reversed(mensajes_recientes):
-            if m.rol == "usuario":
-                raw.append({"role": "user", "content": m.texto})
-            elif m.agente == "agendadora":
-                raw.append({"role": "assistant", "content": m.texto})
-            # mensajes de "principal" o legacy se descartan — la agendadora recibe el contexto
-            # del paciente vía el system prompt, no vía historial de otro agente
+        historial = _build_historial(mensajes_recientes, "agendadora")
 
-        # Colapsar mensajes consecutivos del mismo rol (necesario tras filtrar)
-        historial = []
-        for msg in raw:
-            if historial and historial[-1]["role"] == msg["role"]:
-                historial[-1]["content"] += "\n" + msg["content"]
-            else:
-                historial.append({"role": msg["role"], "content": msg["content"]})
+        # Guardar mensaje entrante (sistema o normal)
+        if _seguimiento:
+            logging.warning(f"[AGENDADORA] Seguimiento para {to_number}")
+        elif user_text:
+            agente_msg = "sistema" if _store_as_sistema else "agendadora"
+            db.add(Mensaje(
+                cliente_id = cliente.id,
+                empresa_id = empresa_id,
+                rol        = "usuario",
+                agente     = agente_msg,
+                texto      = user_text,
+            ))
+            db.commit()
+            if not _store_as_sistema:
+                cliente.mensajes_enviados += 1
+                db.commit()
+                historial.append({"role": "user", "content": user_text})
+                logging.warning(f"\n[AGENDADORA - {to_number}]: {user_text}")
 
-        historial.append({"role": "user", "content": user_text})
-
-        db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="usuario", texto=user_text))
-
-        # ── System prompt con contexto completo del paciente ─────────
+        # System prompt con contexto del paciente
         datos   = cliente.datos_extraidos or {}
         nombre  = cliente.nombre_completo or datos.get("nombre_contacto", "")
         lineas_ctx = []
@@ -488,14 +477,19 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
             lineas_ctx.append(f"Especialidad a agendar: {datos['especialidad_turno']}.")
 
         ctx_paciente = ("\n\n<CONTEXTO_PACIENTE>\n" + "\n".join(lineas_ctx) + "\n</CONTEXTO_PACIENTE>") if lineas_ctx else ""
-        system_final = SYSTEM_PROMPT_AGENDADORA + ctx_paciente
+
+        _now_arg = datetime.now(TIMEZONE)
+        _dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
+        fecha_hoy = f"Hoy es {_dias_es[_now_arg.weekday()]} {_now_arg.strftime('%d/%m/%Y')}, {_now_arg.strftime('%H:%M')}hs (Argentina)."
+        system_final = SYSTEM_PROMPT_AGENDADORA + ctx_paciente + f"\n\n<FECHA_ACTUAL>{fecha_hoy}</FECHA_ACTUAL>"
+
+        if _seguimiento:
+            system_final += f"\n\n<SEGUIMIENTO>{_seguimiento}</SEGUIMIENTO>"
 
         definitions, handlers = get_tools_for_agendadora(empresa)
 
-        # ---------------------------------------------------------------
-        # Loop de herramientas: Claude puede llamar varias tools seguidas
-        # ---------------------------------------------------------------
-        MAX_ITERACIONES = 5  # evitar loops infinitos
+        # Loop de herramientas
+        MAX_ITERACIONES = 5
         for _ in range(MAX_ITERACIONES):
             response = client_claude.messages.create(
                 model="claude-haiku-4-5",
@@ -505,7 +499,6 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
                 messages=historial
             )
 
-            # Separar bloques de texto y de tool_use
             texto_bloques = [b for b in response.content if b.type == "text"]
             tool_bloques  = [b for b in response.content if b.type == "tool_use"]
 
@@ -513,7 +506,6 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
                 texto_respuesta = " ".join(b.text.strip() for b in texto_bloques)
                 logging.warning(f"[AGENDADORA] Respuesta final: {texto_respuesta}")
 
-                # Si Claude describió cobranza en texto sin llamar la tool, forzar otra iteración
                 keywords_cobranza = ("cobr", "transfer", "pago", "abonar", "alias", "cvu")
                 if any(kw in texto_respuesta.lower() for kw in keywords_cobranza):
                     logging.warning("[AGENDADORA] Detectado intento de cobranza en texto — forzando tool call")
@@ -525,10 +517,13 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
                 db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", agente="agendadora", texto=texto_respuesta))
                 break
 
+            # Texto previo junto con tools: descartar si alguna tool es terminal
             if texto_bloques:
-                texto_previo = " ".join(b.text.strip() for b in texto_bloques)
-                await enviar_mensaje_wpp(to_number, texto_previo)
-                db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", agente="agendadora", texto=texto_previo))
+                es_terminal = any(t.name in _TERMINAL_TOOLS for t in tool_bloques)
+                if not es_terminal:
+                    texto_previo = " ".join(b.text.strip() for b in texto_bloques)
+                    await enviar_mensaje_wpp(to_number, texto_previo)
+                    db.add(Mensaje(cliente_id=cliente.id, empresa_id=empresa_id, rol="asistente", agente="agendadora", texto=texto_previo))
 
             if not tool_bloques:
                 break
@@ -560,13 +555,16 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
                     "tool_use_id": tool.id,
                     "content":     resultado
                 })
-                if derivar_tool:
+                if derivar_tool == "_skip_":
+                    derivar = "_skip_"
+                elif derivar_tool:
                     derivar = derivar_tool
 
             historial.append({"role": "user", "content": tool_results})
 
             if derivar:
-                cliente.estado_agente = derivar
+                if derivar != "_skip_":
+                    cliente.estado_agente = derivar
                 db.commit()
                 break
 
@@ -577,7 +575,7 @@ async def secretaria_agendadora(user_text: str, to_number: str, msg_id: str = No
         logging.warning(f"\n[❌ ERROR AGENDADORA]: {e}")
         import traceback; traceback.print_exc()
         try:
-            await enviar_mensaje_wpp(to_number, "Perdón, hubo un problema revisando la agenda. ¿Podés decirme otra fecha o horario?")
+            await enviar_mensaje_wpp(to_number, "Perdón, hubo un problema revisando la agenda. Podés decirme otra fecha o horario?")
         except Exception:
             pass
     finally:

@@ -4,11 +4,27 @@ from models import Cliente, Mensaje, Empresa
 import logging
 import os
 import re
+import asyncio
 
 VERIFY_TOKEN  = os.getenv("WEBHOOK_VERIFY_TOKEN", "secretarIA")
 LIMITE_MENSAJES = 35
 
 router = APIRouter()
+
+# Lock por cliente para serializar mensajes del mismo número
+_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_lock(empresa_id: str, telefono: str) -> asyncio.Lock:
+    key = f"{empresa_id}:{telefono}"
+    if key not in _locks:
+        _locks[key] = asyncio.Lock()
+    return _locks[key]
+
+
+async def _run_locked(fn, *args, empresa_id: str, telefono: str):
+    async with _get_lock(empresa_id, telefono):
+        await fn(*args)
 
 
 # ===================================================================
@@ -149,15 +165,18 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
 
         if estado_agente == "principal":
             from agents.secretaria_principal import secretaria_principal
-            background_tasks.add_task(secretaria_principal, text, phone_number, msg_id, empresa_id)
+            background_tasks.add_task(_run_locked, secretaria_principal, text, phone_number, msg_id, empresa_id,
+                                      empresa_id=empresa_id, telefono=phone_number)
 
         elif estado_agente == "agendadora":
             from agents.agendadora import secretaria_agendadora
-            background_tasks.add_task(secretaria_agendadora, text, phone_number, msg_id, empresa_id)
+            background_tasks.add_task(_run_locked, secretaria_agendadora, text, phone_number, msg_id, empresa_id,
+                                      empresa_id=empresa_id, telefono=phone_number)
 
         elif estado_agente == "esperando_mail":
             from services.cobranza import handler_esperando_mail
-            background_tasks.add_task(handler_esperando_mail, text, phone_number, msg_id, empresa_id)
+            background_tasks.add_task(_run_locked, handler_esperando_mail, text, phone_number, msg_id, empresa_id,
+                                      empresa_id=empresa_id, telefono=phone_number)
 
         elif estado_agente == "manual":
             logging.warning(f"[ROUTER] {phone_number} en modo manual. Ignorando.")

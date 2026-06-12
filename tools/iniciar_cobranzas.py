@@ -78,6 +78,8 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     nombre_clinica = empresa.nombre if empresa else "Clínica"
     empresa_id     = empresa.id if empresa else None
 
+    _DIAS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+
     if iso_dt:
         try:
             dt = datetime.fromisoformat(iso_dt)
@@ -85,7 +87,7 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
             # Si llega naive, ya es hora argentina — no convertir desde UTC.
             start = dt.replace(tzinfo=TIMEZONE) if dt.tzinfo is None else dt.astimezone(TIMEZONE)
         except ValueError:
-            start = None
+            return "El código [ISO:...] no es válido. Copiá exactamente el código que aparece en los horarios ofrecidos.", None
     else:
         texto = f"{dia} {hora}"
         fecha = _parse_fecha(texto)
@@ -96,7 +98,10 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     end = (start + timedelta(hours=1)) if start else None
 
     if not start or not end:
-        return f"No pude interpretar la fecha '{dia} {hora}'. ¿Podés confirmar día y hora exactos?", None
+        return f"No pude interpretar la fecha '{dia} {hora}'. Confirma día y hora exactos.", None
+
+    if start.weekday() >= 5:
+        return f"Los turnos son de lunes a viernes. {_DIAS_ES[start.weekday()].capitalize()} no tiene disponibilidad. Elegí otro horario.", None
 
     # Resolver el profesional del turno actual.
     # Primero buscamos por nombre del tool input (fuente más precisa para este turno);
@@ -140,7 +145,8 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
                 estado            = "reservado",
             ))
             session.commit()
-            content = f"Turno reservado el {start.strftime('%A %d/%m a las %H:%M')} con {profesional_obj.nombre}."
+            fecha_display = f"{_DIAS_ES[start.weekday()]} {start.strftime('%d/%m')} a las {start.strftime('%H')}hs"
+            content = f"Turno reservado el {fecha_display} con {profesional_obj.nombre}."
         except IntegrityError:
             session.rollback()
             return "Ese horario se acaba de ocupar. Voy a buscar otra alternativa.", None
@@ -158,10 +164,9 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
 
             prof_nombre = profesional_obj.nombre if profesional_obj else profesional
             descripcion = f"Turno {nombre_clinica} con {prof_nombre}. Paciente: {cliente.nombre_completo or cliente.telefono}."
-            enlace      = _crear_evento(service, f"Turno {nombre_clinica} - {prof_nombre}", start, end, descripcion, calendar_id)
-            content     = f"Turno reservado el {start.strftime('%A %d/%m a las %H:%M')} con {prof_nombre}."
-            if enlace:
-                content += f" Link: {enlace}"
+            _crear_evento(service, f"Turno {nombre_clinica} - {prof_nombre}", start, end, descripcion, calendar_id)
+            fecha_display = f"{_DIAS_ES[start.weekday()]} {start.strftime('%d/%m')} a las {start.strftime('%H')}hs"
+            content = f"Turno reservado el {fecha_display} con {prof_nombre}."
         except Exception as e:
             logging.warning(f"[TOOL iniciar_cobranzas ERROR calendar]: {e}")
             return "Hubo un problema al reservar el turno. Intentá con otra fecha.", None

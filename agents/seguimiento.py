@@ -1,8 +1,11 @@
 from database import SessionLocal
-from models import Cliente, Seguimiento, ColaAnalisis
+from models import Cliente, Seguimiento
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import asyncio
 import logging
+
+_TIMEZONE_ARG = ZoneInfo("America/Argentina/Buenos_Aires")
 
 # Timer por cliente: cliente_id → Task activa
 _timers: dict[str, asyncio.Task] = {}
@@ -26,104 +29,60 @@ def cancelar_timer(cliente_id: str):
 
 
 async def _disparar_seguimiento(cliente_id: str, telefono: str, empresa_id: str):
-    """Espera 2m30s y manda el seguimiento si el cliente sigue sin responder."""
+    """Espera 2m30s y reenvía al agente activo con instrucción de seguimiento."""
     await asyncio.sleep(150)
 
     db = SessionLocal()
     try:
-        from agents.herramientas_secretarias import enviar_mensaje_wpp
-
         cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
+
+        # Condiciones de NO disparo
         if not cliente or not cliente.bot_activo or cliente.estado_agente == "manual":
             return
 
-        ya_activo = db.query(Seguimiento).filter(
+        # Ya se disparó un seguimiento en esta sesión (máximo 1)
+        if db.query(Seguimiento).filter(
             Seguimiento.cliente_id == cliente_id,
             Seguimiento.estado     == "esperando_respuesta",
-        ).first()
-        if ya_activo:
+        ).first():
             return
 
-        ahora = datetime.now(timezone.utc).replace(tzinfo=None)
-        await enviar_mensaje_wpp(telefono, "¿Quedó alguna duda?")
+        # Turno confirmado → no interrumpir
+        datos = cliente.datos_extraidos or {}
+        if datos.get("pago_estado") in ("esperando_comprobante", "pagado"):
+            return
+
+        # Fuera de horario laboral ARG (09:00–21:00)
+        hora_local = datetime.now(_TIMEZONE_ARG).hour
+        if hora_local < 9 or hora_local >= 21:
+            return
+
+        # Registrar para evitar duplicados
         db.add(Seguimiento(
             cliente_id       = cliente_id,
             estado           = "esperando_respuesta",
-            fecha_programada = ahora + timedelta(hours=1),
+            fecha_programada = datetime.now(timezone.utc).replace(tzinfo=None),
         ))
         db.commit()
-        logging.warning(f"[SEGUIMIENTO] Disparado para {telefono}")
+
+        instruccion = (
+            "El paciente no respondió. Mandale un toque corto y contextual al paso "
+            "pendiente (una oración). Si no hay nada pendiente, llamá omitir_respuesta."
+        )
+
+        estado_actual = cliente.estado_agente
+        if estado_actual == "principal":
+            from agents.secretaria_principal import secretaria_principal
+            await secretaria_principal("", telefono, None, empresa_id, _seguimiento=instruccion)
+        elif estado_actual == "agendadora":
+            from agents.agendadora import secretaria_agendadora
+            await secretaria_agendadora("", telefono, None, empresa_id, _seguimiento=instruccion)
+
+        logging.warning(f"[SEGUIMIENTO] Toque disparado para {telefono} (estado={estado_actual})")
+
     except Exception as e:
         logging.warning(f"[❌ SEGUIMIENTO TIMER]: {e}")
         import traceback; traceback.print_exc()
     finally:
         db.close()
         _timers.pop(cliente_id, None)
-
-
-async def job_seguimiento():
-    """
-    Job cada 5 minutos — solo fases 2 y 3.
-
-    Fase 2 — Análisis:
-        seguimiento "esperando_respuesta" vencido →
-        si respondió: limpia. Si no: corre análisis IA.
-
-    Fase 3 — Remarketing:
-        seguimiento "pendiente" vencido → manda mensaje.
-    """
-    logging.warning("[📬 SEGUIMIENTO] Ronda fases 2+3...")
-    ahora = datetime.now(timezone.utc).replace(tzinfo=None)
-    db    = SessionLocal()
-    try:
-        from agents.herramientas_secretarias import enviar_mensaje_wpp
-        from services.analisis_charla import analizar_y_registrar
-
-        # ── FASE 2 ───────────────────────────────────────────────────────────────
-        for seg in db.query(Seguimiento).filter(
-            Seguimiento.estado           == "esperando_respuesta",
-            Seguimiento.fecha_programada <= ahora,
-        ).all():
-            cola    = db.query(ColaAnalisis).filter(ColaAnalisis.cliente_id == seg.cliente_id).first()
-            cliente = db.query(Cliente).filter(Cliente.id == seg.cliente_id).first()
-
-            if not cola or not cliente:
-                if cola: db.delete(cola)
-                db.delete(seg)
-                db.commit()
-                continue
-
-            sent_at = seg.fecha_programada - timedelta(hours=1)
-            if cola.fecha_ultima_actividad > sent_at:
-                logging.warning(f"[SEGUIMIENTO] {cliente.telefono} respondió — limpiando.")
-            else:
-                logging.warning(f"[SEGUIMIENTO] {cliente.telefono} sin respuesta — analizando.")
-                await analizar_y_registrar(cliente, db)
-
-            db.delete(seg)
-            db.delete(cola)
-            db.commit()
-
-        # ── FASE 3 ───────────────────────────────────────────────────────────────
-        for seg in db.query(Seguimiento).filter(
-            Seguimiento.estado           == "pendiente",
-            Seguimiento.fecha_programada <= ahora,
-        ).all():
-            cliente = db.query(Cliente).filter(Cliente.id == seg.cliente_id).first()
-            if not cliente:
-                seg.estado = "enviado"
-                db.commit()
-                continue
-            try:
-                await enviar_mensaje_wpp(cliente.telefono, "¿Seguís interesado en sacar un turno?")
-                seg.estado = "enviado"
-                db.commit()
-                logging.warning(f"[REMARKETING] Enviado a {cliente.telefono}")
-            except Exception as e:
-                logging.warning(f"[❌ REMARKETING] {cliente.telefono}: {e}")
-
-    except Exception as e:
-        logging.warning(f"[❌ ERROR JOB SEGUIMIENTO]: {e}")
-        import traceback; traceback.print_exc()
-    finally:
-        db.close()

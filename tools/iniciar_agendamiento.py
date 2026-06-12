@@ -18,7 +18,7 @@ DEFINITION = {
 async def handler(tool_input, cliente, session, empresa, scope=None):
     """
     Asigna profesional, cambia estado a 'agendadora' y arranca el flujo de agendamiento.
-    Retorna (content, "agendadora") para que el service cambie el estado.
+    El trigger sintético se guarda con agente='sistema' para que no contamine el historial.
     """
     especialidad = tool_input.get("especialidad", "no especificada")
     cobertura    = tool_input.get("cobertura",    "no especificada")
@@ -27,7 +27,6 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
 
     logging.warning(f"[TOOL iniciar_agendamiento] {cliente.telefono} | {especialidad} | {cobertura} | prof={profesional}")
 
-    # Actualizar profesional del cliente: por nombre si se pasó, o por especialidad como fallback
     from services.profesionales import get_profesional_by_nombre, get_profesional_by_especialidad, _normalizar_especialidad
     prof_obj = None
     if profesional:
@@ -39,20 +38,10 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
         session.commit()
         logging.warning(f"[TOOL iniciar_agendamiento] Profesional actualizado: {prof_obj.nombre}")
 
-    from agents.herramientas_secretarias import enviar_mensaje_wpp
-    await enviar_mensaje_wpp(
-        cliente.telefono,
-        "Dale, dejame revisar la agenda para coordinar día y hora. Un segundo..."
-    )
-
     try:
         from agents.agendadora import secretaria_agendadora
-        await secretaria_agendadora(
-            f"Iniciar agendamiento para especialidad {especialidad} con cobertura {cobertura}.",
-            cliente.telefono,
-            None,
-            empresa_id
-        )
+        trigger = f"Iniciar agendamiento para especialidad {especialidad} con cobertura {cobertura}."
+        await secretaria_agendadora(trigger, cliente.telefono, None, empresa_id, _store_as_sistema=True)
     except Exception as e:
         logging.warning(f"[TOOL iniciar_agendamiento ERROR]: {e}")
 

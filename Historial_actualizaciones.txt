@@ -1,0 +1,141 @@
+====================================================
+HISTORIAL DE ACTUALIZACIONES — SecretarIA Atardecer
+====================================================
+claude escucha soy walter el dueño de esto te escribo a vos, las actualizaciones ponelas sin sobreescribir nada que quiero el registro
+----------------------------------------------------
+2026-06-12 | feat: estabilización SPEC v2 (3A-3G)
+----------------------------------------------------
+
+AGREGADO
+--------
+- tools/omitir_respuesta.py
+    Nueva tool sin parámetros. Cuando el paciente cerró la charla o no corresponde
+    responder, el agente la llama y no se envía nada. Disponible en principal y agendadora.
+
+- migrations/versions/b1c2d3e4f5a6_drop_cola_analisis.py
+    Migración Alembic que borra la tabla cola_analisis de la BD.
+
+- routes/whatsapp.py: lock de concurrencia por cliente
+    Dict _locks + _run_locked. Dos mensajes seguidos del mismo número se procesan
+    en secuencia (no en paralelo). Pacientes distintos siguen corriendo en paralelo.
+
+- agents/secretaria_principal.py: _build_historial (4 reglas)
+    Función centralizada de armado de historial. Reglas: agente="sistema" nunca entra,
+    usuario siempre entra, asistente propio como assistant, asistente ajeno como user
+    con prefijo [mensaje que {agente} le envió al paciente].
+
+- agents/agendadora.py: parámetros _store_as_sistema y _seguimiento
+    _store_as_sistema: guarda el trigger sintético con agente="sistema" para que
+    no contamine el historial de Abby. _seguimiento: inyecta instrucción al system
+    prompt sin guardarla en la BD.
+
+MODIFICADO
+----------
+- agents/secretaria_principal.py (prompt + loop + _build_system_prompt)
+    · Prompt: agregado "CONFIRMÁS UNA SOLA VEZ" (anti doble confirmación).
+    · Ejemplo "Recurrente sin memoria" unificado: una sola confirmación de identidad
+      y profesional en lugar de dos mensajes separados.
+    · Herramientas: agregado omitir_respuesta, quitado silenciar_seguimiento del prompt.
+    · Loop: texto_previo se descarta si hay tool terminal en el mismo turno
+      (iniciar_agendamiento, iniciar_cobranzas, omitir_respuesta).
+    · _build_system_prompt: agrega "Turno vigente" a la MEMORIA_DEL_CLIENTE si existe.
+    · Parámetro _seguimiento: instrucción de seguimiento inyectada al system prompt.
+
+- agents/agendadora.py (prompt + loop + historial)
+    · Prompt reescrito: nunca saluda, primer acto es consultar_calendar("mañana", dias=3)
+      y ofrecer 2-3 slots concretos. Solo pregunta en abierto si el paciente rechaza todas.
+    · _slots_disponibles: filtro lunes a viernes (weekday >= 5 se salta).
+    · Loop: mismas 4 reglas de historial que la principal. Texto previo descartado
+      para tools terminales (iniciar_cobranzas, omitir_respuesta).
+
+- agents/herramientas_secretarias.py
+    · enviar_mensaje_wpp: sanitización de ¿ ¡ ** antes de enviar.
+    · Eliminados: import ColaAnalisis, función upsert_cola_analisis.
+
+- tools/iniciar_agendamiento.py
+    · Eliminado el mensaje "Dale, dejame revisar la agenda..." (evita mensaje doble).
+    · Trigger a secretaria_agendadora se guarda con agente="sistema".
+
+- tools/registry.py
+    · omitir_respuesta agregado al TOOL_CATALOG.
+    · get_tools_for_agendadora incluye omitir_respuesta.
+
+- services/cobranza.py
+    · Simplificado: precio + alias + template de cierre + email. Sin tracking de pagos.
+    · Template de cierre: "Gracias {nombre}! quedaste agendado/a para el {info_turno}.
+      Cualquier consulta estamos acá 😊". Persiste con agente="cobranzas".
+    · Quitados: pago_estado, monto_pendiente en datos_extraidos.
+    · Quitados: signos de apertura (¿ ¡) de mensajes de texto.
+
+- agents/seguimiento.py
+    · Reescrito: solo timer de 2.5min que invoca al agente activo con instrucción
+      de seguimiento (no guarda nada en BD). Condiciones de no disparo: manual,
+      ya enviado esta sesión, pago_estado seteado, fuera de 9-21hs ARG.
+    · Eliminadas: fase 2 (análisis IA de charlas vencidas) y fase 3 (remarketing).
+
+- models.py
+    · Eliminada clase ColaAnalisis y su relationship en Cliente.
+
+- main.py
+    · Eliminado APScheduler y el job job_seguimiento (ya no hay fases periódicas).
+
+- CLAUDE.md
+    · Actualizado para reflejar el estado actual del código.
+
+ELIMINADO
+---------
+- agents/analista.py
+    Analista de transición (generaba resumen_situacion). No estaba siendo llamado
+    desde ningún flujo activo.
+
+- services/analisis_charla.py
+    Análisis IA de charlas vencidas. Solo lo usaba la fase 2 del seguimiento, que fue eliminada.
+
+- tabla cola_analisis (BD)
+    Borrada vía migración b1c2d3e4f5a6. Ya no hay analista que la consuma.
+
+----------------------------------------------------
+2026-06-12 | fix: 6 bugs post sesión de pruebas (bugs #1-#6)
+----------------------------------------------------
+
+MODIFICADO
+----------
+- tools/consultar_calendar.py
+    · Eliminado: envío de "Reviso la agenda... un momento." (bug #2 — mensaje fantasma)
+
+- agents/herramientas_secretarias.py
+    · Corregido typo "interezado" → "interesado" (bug #6)
+    · Corregido f-string: {{{variable}}} → {variable} en enviar_notificacion_a_walter
+      (bug #6 — los números y nombres llegaban como "{5491131720843}" en vez del valor)
+
+- tools/iniciar_cobranzas.py
+    · ISO datetime: ValueError devuelve mensaje de error en vez de None (bug #3)
+    · Defensa fin de semana: si start.weekday() >= 5, retorna error sin crear evento (bug #4)
+    · Días en español: strftime('%A') reemplazado por dict _DIAS_ES (bug #5)
+    · Eliminado: link de Google Calendar del string `content` que se pasaba a cobranza (bug #5)
+
+- services/cobranza.py
+    · Template: usar solo el primer nombre (split()[0]) en lugar del nombre completo (bug #5)
+    · Template: strip de " Link: ..." en info_turno como defensa adicional (bug #5)
+
+- agents/secretaria_principal.py
+    · _build_system_prompt: inyecta <FECHA_ACTUAL> con día/fecha/hora ARG al final (bug #3)
+
+- agents/agendadora.py
+    · system_final: inyecta <FECHA_ACTUAL> con día/fecha/hora ARG al armar el prompt (bug #3)
+
+----------------------------------------------------
+2026-06-11 | feat: descuentos por obra social (OSBA 30%, Galeno 20%)
+----------------------------------------------------
+- Descuentos configurados sobre tarifa_particular en tabla profesionales.
+- Campo descuentos_obras_sociales JSON en modelo Profesional.
+
+----------------------------------------------------
+2026-06-04 | fix: columna agente en mensajes
+----------------------------------------------------
+- Agregada columna agente (principal/agendadora) en tabla mensajes.
+- Permite filtrar historial por agente activo.
+
+----------------------------------------------------
+Anteriores — ver git log para detalle
+----------------------------------------------------
