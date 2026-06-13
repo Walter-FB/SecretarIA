@@ -62,7 +62,7 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     luego lanza cobranzas.
     Retorna (content, "cobranzas").
     """
-    from agents.agendadora import (
+    from agents.abby import (
         _parse_fecha, _parse_hora, _build_calendar_service, _is_busy, _crear_evento
     )
     from zoneinfo import ZoneInfo

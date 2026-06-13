@@ -163,14 +163,9 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         # ── Despacho al agente ────────────────────────────────────────
         logging.warning(f"[ROUTER] {phone_number} | empresa={empresa_id} | estado={estado_agente}")
 
-        if estado_agente == "principal":
-            from agents.secretaria_principal import secretaria_principal
-            background_tasks.add_task(_run_locked, secretaria_principal, text, phone_number, msg_id, empresa_id,
-                                      empresa_id=empresa_id, telefono=phone_number)
-
-        elif estado_agente == "agendadora":
-            from agents.agendadora import secretaria_agendadora
-            background_tasks.add_task(_run_locked, secretaria_agendadora, text, phone_number, msg_id, empresa_id,
+        if estado_agente in ("principal", "agendadora"):
+            from agents.abby import abby
+            background_tasks.add_task(_run_locked, abby, text, phone_number, msg_id, empresa_id,
                                       empresa_id=empresa_id, telefono=phone_number)
 
         elif estado_agente == "esperando_mail":

@@ -70,15 +70,10 @@ async def _disparar_seguimiento(cliente_id: str, telefono: str, empresa_id: str)
             "pendiente (una oración). Si no hay nada pendiente, llamá omitir_respuesta."
         )
 
-        estado_actual = cliente.estado_agente
-        if estado_actual == "principal":
-            from agents.secretaria_principal import secretaria_principal
-            await secretaria_principal("", telefono, None, empresa_id, _seguimiento=instruccion)
-        elif estado_actual == "agendadora":
-            from agents.agendadora import secretaria_agendadora
-            await secretaria_agendadora("", telefono, None, empresa_id, _seguimiento=instruccion)
+        from agents.abby import abby
+        await abby("", telefono, None, empresa_id, _seguimiento=instruccion)
 
-        logging.warning(f"[SEGUIMIENTO] Toque disparado para {telefono} (estado={estado_actual})")
+        logging.warning(f"[SEGUIMIENTO] Toque disparado para {telefono} (estado={cliente.estado_agente})")
 
     except Exception as e:
         logging.warning(f"[❌ SEGUIMIENTO TIMER]: {e}")

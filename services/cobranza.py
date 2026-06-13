@@ -55,16 +55,19 @@ def generar_mensaje_cobro(db, especialidad: str = None, cobertura: str = None, o
     esp_display       = "Psicólogo" if (not profesional or profesional.especialidad == "psicologo") else "Psiquiatra"
     prof_nombre       = profesional.nombre if profesional else esp_display
 
-    mensaje = f"Te paso el detalle para abonar tu consulta con {prof_nombre}:\n\n"
+    mensaje = f"Te paso el detalle de tu consulta con {prof_nombre}:\n\n"
 
     if modalidad == "obra social":
         os_display = os_nombre or "Obra Social"
         descuento  = precio_particular - monto
         mensaje += f"Precio de lista: ${precio_particular:,}\n"
         mensaje += f"Descuento {os_display}: -${descuento:,}\n"
-        mensaje += f"Total a pagar: ${monto:,}\n\n"
+        mensaje += f"Total: ${monto:,}\n\n"
     else:
-        mensaje += f"Total a pagar: ${monto:,}\n\n"
+        mensaje += f"Total: ${monto:,}\n\n"
+
+    mensaje += "El pago se realiza en el consultorio al momento de la consulta.\n"
+    mensaje += "Si preferís, también podés transferir previamente:\n"
 
     if not (empresa and empresa.alias_pago):
         logging.warning(f"[⚠️ PAGO] empresa '{getattr(empresa, 'nombre', 'desconocida')}' sin alias_pago — usando fallback de Walter")
@@ -72,7 +75,6 @@ def generar_mensaje_cobro(db, especialidad: str = None, cobertura: str = None, o
     cvu     = (empresa.cvu_pago   if empresa and empresa.cvu_pago   else PAGO_INFO["cvu"])
     titular = (empresa.nombre     if empresa else PAGO_INFO["titular"])
 
-    mensaje += "Datos para transferir:\n"
     mensaje += f"• Alias: {alias}\n"
     mensaje += f"• Titular: {titular}\n"
     if cvu:

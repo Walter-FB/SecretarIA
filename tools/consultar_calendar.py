@@ -27,7 +27,7 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     - profesional.calendar_id is None → motor local (tabla turnos)
     - "empresa" o ID real          → Google Calendar
     """
-    from agents.agendadora import _consultar_calendar, _consultar_calendar_local
+    from agents.abby import _consultar_calendar, _consultar_calendar_local
     from agents.herramientas_secretarias import enviar_mensaje_wpp
 
     # Resolver profesional y motor
