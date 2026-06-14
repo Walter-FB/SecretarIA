@@ -63,6 +63,14 @@ else:
         else:
             print("[STARTUP] Columna 'agente' ya existe ✓")
 
+        # ── Columna descuentos_obras_sociales en profesionales ────
+        cols_prof = [c["name"] for c in inspector.get_columns("profesionales")]
+        if "descuentos_obras_sociales" not in cols_prof:
+            conn.execute(text("ALTER TABLE profesionales ADD COLUMN descuentos_obras_sociales JSON"))
+            print("[STARTUP] Columna 'descuentos_obras_sociales' agregada a profesionales ✓")
+        else:
+            print("[STARTUP] Columna 'descuentos_obras_sociales' ya existe ✓")
+
 # Asegurarse de que exista la empresa por defecto
 from init_db import seed_empresa_default, seed_profesionales, seed_abriness_multitenant
 seed_empresa_default()

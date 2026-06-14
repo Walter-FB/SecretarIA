@@ -114,9 +114,9 @@ def seed_profesionales():
 
 def seed_abriness_multitenant():
     """
-    Migración de datos: llena los campos multi-tenant de la empresa Abriness
-    con los valores que hoy están hardcodeados en el código.
-    Idempotente: solo actualiza campos vacíos, no pisa lo que ya tenga valor.
+    Sincroniza campos multi-tenant de la empresa Abriness.
+    - tools_habilitadas siempre se resetea a None (usa todas las tools del catálogo)
+    - El resto solo se actualiza si está vacío
     """
     import os
     db = SessionLocal()
@@ -126,8 +126,7 @@ def seed_abriness_multitenant():
             print(f"[WARN] Empresa default no encontrada. Corré seed_empresa_default() primero.")
             return
 
-        # Importar el system prompt completo de Abby (lazy para evitar circular import en startup)
-        from agents.secretaria_principal import SYSTEM_PROMPT_PRINCIPAL
+        from agents.abby import SYSTEM_PROMPT_ABBY
 
         cambios = {}
 
@@ -142,16 +141,11 @@ def seed_abriness_multitenant():
                 cambios["calendar_id"] = cal
 
         if not empresa.prompt_personalidad or len(empresa.prompt_personalidad) < 200:
-            cambios["prompt_personalidad"] = SYSTEM_PROMPT_PRINCIPAL
+            cambios["prompt_personalidad"] = SYSTEM_PROMPT_ABBY
 
-        if not empresa.tools_habilitadas:
-            cambios["tools_habilitadas"] = [
-                "registrar_paciente",
-                "verificar_paciente_existente",
-                "iniciar_agendamiento",
-                "iniciar_cobranzas",
-                "notificar_walter_urgente",
-            ]
+        # Siempre None = usar todas las tools del catálogo (fix para lista vieja con iniciar_agendamiento)
+        if empresa.tools_habilitadas is not None:
+            cambios["tools_habilitadas"] = None
 
         if not empresa.alias_pago:
             cambios["alias_pago"] = "juan9910"

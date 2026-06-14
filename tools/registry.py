@@ -45,14 +45,3 @@ def get_tools_for_abby(empresa=None):
     return definitions, handlers
 
 
-# ── Funciones legacy (código muerto — no se usan más) ─────────────
-# Se conservan por si hace falta rollback.
-
-def get_tools_for_empresa(empresa):
-    """DEPRECATED — usar get_tools_for_abby()."""
-    return get_tools_for_abby(empresa)
-
-
-def get_tools_for_agendadora(empresa=None):
-    """DEPRECATED — la agendadora ya no existe como agente separado."""
-    return get_tools_for_abby(empresa)

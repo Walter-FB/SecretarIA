@@ -3,10 +3,7 @@ import re
 
 DEFINITION = {
     "name": "registrar_paciente",
-    "description": (
-        "Guarda los datos de un paciente nuevo. "
-        "Llamar antes de iniciar_agendamiento si es primera vez o si verificar_paciente_existente no encontró resultados."
-    ),
+    "description": "Guarda los datos de un paciente nuevo. Llamar cuando tenés todos los datos o para completar los que faltan.",
     "input_schema": {
         "type": "object",
         "properties": {

@@ -1,25 +1,6 @@
 import logging
 from datetime import timedelta
 
-# ──────────────────────────────────────────────────────────────────────────────
-# NOTA SOBRE CONTEXTOS:
-# Esta tool tiene dos usos distintos con schemas distintos:
-#
-# Contexto A — secretaria_principal (consulta de precio sin turno):
-#   Input: {"especialidad": "psicología", "cobertura": "OSDE"}
-#   Handler: llama a iniciar_cobranzas_svc() directamente, sin crear evento de calendar.
-#   DEFINITION usada en secretaria_principal: DEFINITION_PRECIO (abajo)
-#
-# Contexto B — agendadora (turno ya elegido, crear evento + cobrar):
-#   Input: {"dia": "...", "hora": "...", "profesional": "...", "iso_datetime": "..."}
-#   Handler: parsea datetime, crea evento en Google Calendar, luego llama a cobranza.
-#   DEFINITION usada en agendadora: DEFINITION (abajo)
-#
-# El registry expone DEFINITION (agendadora) por defecto.
-# Cuando los services se conecten al catálogo, el agente correcto usará la definición correcta.
-# ──────────────────────────────────────────────────────────────────────────────
-
-# Definición para la agendadora (turno confirmado)
 DEFINITION = {
     "name": "iniciar_cobranzas",
     "description": "Deriva a cobranzas cuando el paciente acepta pagar. Pasás los datos del turno elegido.",
@@ -38,34 +19,12 @@ DEFINITION = {
     }
 }
 
-# Definición para la secretaria principal (fallback: turno ya confirmado pero cobranza no se completó)
-DEFINITION_PRECIO = {
-    "name": "iniciar_cobranzas",
-    "description": (
-        "Usá SOLO si el paciente ya tiene turno confirmado pero nunca recibió las instrucciones de pago "
-        "(la agendadora no completó el flujo). "
-        "Para consultas de precio usá consultar_precio en su lugar."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "especialidad": {"type": "string", "enum": ["psicología", "psiquiatría"]},
-            "cobertura":    {"type": "string"}
-        }
-    }
-}
-
 
 async def handler(tool_input, cliente, session, empresa, scope=None):
-    """
-    Handler para el contexto de agendadora: parsea el datetime, crea el evento en calendar,
-    luego lanza cobranzas.
-    Retorna (content, "cobranzas").
-    """
-    from agents.abby import (
-        _parse_fecha, _parse_hora, _build_calendar_service, _is_busy, _crear_evento
+    from tools.calendar_utils import (
+        TIMEZONE, _parse_fecha, _parse_hora,
+        _build_calendar_service, _is_busy, _crear_evento,
     )
-    from zoneinfo import ZoneInfo
     from datetime import datetime
     import os
 
@@ -73,7 +32,6 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     hora        = tool_input.get("hora", "")
     profesional = tool_input.get("profesional", "")
     iso_dt      = tool_input.get("iso_datetime", "")
-    TIMEZONE    = ZoneInfo('America/Argentina/Buenos_Aires')
 
     nombre_clinica = empresa.nombre if empresa else "Clínica"
     empresa_id     = empresa.id if empresa else None
@@ -83,7 +41,6 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     if iso_dt:
         try:
             dt = datetime.fromisoformat(iso_dt)
-            # Claude a veces elimina el offset "-03:00" del ISO generado por consultar_calendar.
             # Si llega naive, ya es hora argentina — no convertir desde UTC.
             start = dt.replace(tzinfo=TIMEZONE) if dt.tzinfo is None else dt.astimezone(TIMEZONE)
         except ValueError:
@@ -103,9 +60,6 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     if start.weekday() >= 5:
         return f"Los turnos son de lunes a viernes. {_DIAS_ES[start.weekday()].capitalize()} no tiene disponibilidad. Elegí otro horario.", None
 
-    # Resolver el profesional del turno actual.
-    # Primero buscamos por nombre del tool input (fuente más precisa para este turno);
-    # solo si no se encuentra, usamos el profesional_id que ya tenía el cliente.
     from models import Profesional as ProfModel
     from services.profesionales import get_profesional_by_nombre
     profesional_obj = None
@@ -114,7 +68,6 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
     if not profesional_obj and cliente and cliente.profesional_id:
         profesional_obj = session.query(ProfModel).filter(ProfModel.id == cliente.profesional_id).first()
 
-    # Actualizar profesional_id del cliente al recién confirmado (para sesiones futuras)
     if profesional_obj and cliente and cliente.profesional_id != profesional_obj.id:
         cliente.profesional_id = profesional_obj.id
         session.commit()
@@ -151,7 +104,6 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
             session.rollback()
             return "Ese horario se acaba de ocupar. Voy a buscar otra alternativa.", None
     else:
-        # Motor Calendar
         if profesional_obj and profesional_obj.calendar_id and profesional_obj.calendar_id != "empresa":
             calendar_id = profesional_obj.calendar_id
         else:
@@ -171,7 +123,6 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
             logging.warning(f"[TOOL iniciar_cobranzas ERROR calendar]: {e}")
             return "Hubo un problema al reservar el turno. Intentá con otra fecha.", None
 
-    # Iniciar flujo de cobranza
     from services.cobranza import iniciar_cobranzas as iniciar_cobranzas_svc
     esp = profesional_obj.nombre if profesional_obj else profesional
     next_state = await iniciar_cobranzas_svc(
@@ -181,23 +132,3 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
         empresa_id     = empresa_id,
     )
     return content, next_state
-
-
-async def handler_precio(tool_input, cliente, session, empresa, scope=None):
-    """
-    Handler fallback para secretaria_principal: el turno ya fue confirmado por la agendadora
-    pero el flujo de cobranza no se completó. Lee ultimo_turno de datos_extraidos si existe.
-    """
-    empresa_id    = empresa.id if empresa else None
-    datos         = dict(cliente.datos_extraidos or {}) if cliente else {}
-    detalle_turno = datos.get("ultimo_turno")
-
-    from services.cobranza import iniciar_cobranzas as iniciar_cobranzas_svc
-    next_state = await iniciar_cobranzas_svc(
-        cliente.telefono,
-        especialidad=tool_input.get("especialidad"),
-        cobertura=tool_input.get("cobertura"),
-        detalle_turno=detalle_turno,
-        empresa_id=empresa_id,
-    )
-    return "Instrucciones de pago enviadas.", next_state
