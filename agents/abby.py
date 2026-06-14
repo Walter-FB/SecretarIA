@@ -78,7 +78,7 @@ P: Hola, necesito turno.
 A: Claro {nombre}! 😊 seria con {profesional_habitual} como la ultima ves?
 P: Si, por favor
 [→ consultar_calendar con texto_fecha="mañana" y dias_a_consultar=3]
-A: Tengo disponibilidad el martes a las 10hs, miércoles 14hs o jueves 11hs, te sirve alguno?
+A: Tengo disponibilidad el martes a las 10hs, 11hs, 12hs, miércoles 14hs o jueves 11hs, te sirve alguno?
 P: El martes a las 10
 A: Perfecto, te confirmo el martes a las 10 con {profesional}?
 P: Si dale
@@ -308,7 +308,7 @@ async def abby(
             logging.warning(f"[ABBY] Iteración {iteracion + 1}/{MAX_ITER}")
 
             response = client_claude.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model="claude-sonnet-4-6",
                 max_tokens=700,
                 temperature=0.3,
                 system=[
