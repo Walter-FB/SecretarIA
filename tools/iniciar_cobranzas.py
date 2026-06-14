@@ -3,7 +3,7 @@ from datetime import timedelta
 
 DEFINITION = {
     "name": "iniciar_cobranzas",
-    "description": "Deriva a cobranzas cuando el paciente acepta pagar. Pasás los datos del turno elegido.",
+    "description": "Reserva el turno y envía al paciente los datos de pago. Llamala cuando el paciente confirmó el horario — sin anunciarlo.",
     "input_schema": {
         "type": "object",
         "properties": {
