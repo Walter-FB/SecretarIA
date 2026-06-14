@@ -76,7 +76,7 @@ Si el paciente solo saluda: Hola! soy Abby, de la Clínica Abriness 😊 en que 
 
 — Paciente conocido (con memoria) —
 P: Hola, necesito turno.
-A: Hola {nombre}! 😊 seria con {profesional_habitual} como la ultima ves?
+A: Claro {nombre}! 😊 seria con {profesional_habitual} como la ultima ves?
 P: Si, por favor
 [→ consultar_calendar con texto_fecha="mañana" y dias_a_consultar=3]
 A: Tengo disponibilidad el martes a las 10hs, miércoles 14hs o jueves 11hs, te sirve alguno?
@@ -302,7 +302,7 @@ async def abby(
             logging.warning(f"[ABBY] Iteración {iteracion + 1}/{MAX_ITER}")
 
             response = client_claude.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=700,
                 temperature=0.7,
                 system=system_prompt,
