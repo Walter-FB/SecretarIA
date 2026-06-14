@@ -6,8 +6,9 @@ import os
 import re
 import asyncio
 
-VERIFY_TOKEN  = os.getenv("WEBHOOK_VERIFY_TOKEN", "secretarIA")
-LIMITE_MENSAJES = 35
+VERIFY_TOKEN    = os.getenv("WEBHOOK_VERIFY_TOKEN", "secretarIA")
+LIMITE_MENSAJES = 50
+RESET_HORAS     = 24
 
 router = APIRouter()
 
@@ -155,6 +156,27 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
                 finally:
                     db.close()
             return Response(content="OK", status_code=200)
+
+        if mensajes_enviados >= LIMITE_MENSAJES:
+            # Reset si pasaron más de RESET_HORAS desde el último mensaje del usuario
+            from datetime import datetime, timedelta
+            db = SessionLocal()
+            try:
+                ultimo = (
+                    db.query(Mensaje)
+                    .filter(Mensaje.cliente_id == cliente_id, Mensaje.rol == "usuario")
+                    .order_by(Mensaje.fecha_creacion.desc())
+                    .first()
+                )
+                if ultimo and (datetime.utcnow() - ultimo.fecha_creacion) > timedelta(hours=RESET_HORAS):
+                    c = db.query(Cliente).filter(Cliente.id == cliente_id).first()
+                    if c:
+                        c.mensajes_enviados = 0
+                        db.commit()
+                        mensajes_enviados = 0
+                        logging.warning(f"[ROUTER] {phone_number} contador reseteado (inactividad >{RESET_HORAS}h)")
+            finally:
+                db.close()
 
         if mensajes_enviados >= LIMITE_MENSAJES:
             logging.warning(f"[ROUTER] {phone_number} bloqueado (limite {LIMITE_MENSAJES} mensajes).")
