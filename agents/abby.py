@@ -305,17 +305,9 @@ async def abby(
         system_base, system_dynamic = _build_system_prompt(cliente, db, empresa, seguimiento=_seguimiento)
         definitions, handlers = get_tools_for_abby(empresa)
 
-        # Cache: SOLO system_base + tools (siempre estático). system_dynamic va en messages.
+        # Cache: system_base cacheado (estático). system_dynamic en system sin cache_control.
+        # No se cachean las tools — evita writes espurios en cada iteración con tool_use.
         defs_cached = list(definitions)
-        if defs_cached:
-            defs_cached[-1] = {**defs_cached[-1], "cache_control": {"type": "ephemeral"}}
-
-        # system_dynamic (memoria + fecha) como par sintético al inicio del historial
-        if system_dynamic.strip():
-            historial = [
-                {"role": "user",      "content": system_dynamic.strip()},
-                {"role": "assistant", "content": "Entendido."},
-            ] + historial
 
         # ── Loop de tools (máx 5 iteraciones) ──────────────────────
         MAX_ITER = 5
@@ -329,7 +321,8 @@ async def abby(
                 max_tokens=700,
                 temperature=0.3,
                 system=[
-                    {"type": "text", "text": system_base},
+                    {"type": "text", "text": system_base, "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": system_dynamic},
                 ],
                 tools=defs_cached,
                 messages=historial,
