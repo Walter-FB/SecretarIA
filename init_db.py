@@ -147,6 +147,9 @@ def seed_abriness_multitenant():
         if empresa.tools_habilitadas is not None:
             cambios["tools_habilitadas"] = None
 
+        if empresa.nombre == "SecretarIA Enterprise":
+            cambios["nombre"] = "Clínica Abriness"
+
         if not empresa.alias_pago:
             cambios["alias_pago"] = "juan9910"
 
