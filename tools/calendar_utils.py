@@ -106,7 +106,7 @@ def _slots_disponibles(
     busy_ranges: list,
     hora_pedida,
 ) -> list:
-    MAX_SLOTS = 12
+    MAX_SLOTS = 45
     slots  = []
     cursor = desde
 
@@ -150,6 +150,22 @@ def _slots_ocupados_local(db, profesional_id: str, fecha_inicio: datetime, fecha
     return [(t.fecha_hora_inicio, t.fecha_hora_fin) for t in ocupados]
 
 
+def _formatear_slots(slots: list) -> str:
+    """Agrupa slots por día, muestra hasta 5 por día con 'etc' si hay más."""
+    from collections import defaultdict
+    by_day = defaultdict(list)
+    for s in slots:
+        by_day[s.date()].append(s)
+    lineas = []
+    for day in sorted(by_day):
+        day_slots = by_day[day]
+        for s in day_slots[:5]:
+            lineas.append(f"- {s.strftime('%A %d/%m a las %H:%M').capitalize()} [ISO:{s.isoformat()}]")
+        if len(day_slots) > 5:
+            lineas.append("  (etc.)")
+    return "Turnos disponibles:\n" + "\n".join(lineas)
+
+
 def _consultar_calendar_local(texto_fecha: str, dias: int = 1, profesional_id: str = None, db=None) -> str:
     fecha       = _parse_fecha(texto_fecha)
     hora_pedida = _parse_hora(texto_fecha)
@@ -178,8 +194,7 @@ def _consultar_calendar_local(texto_fecha: str, dias: int = 1, profesional_id: s
     slots = _slots_disponibles(fecha_inicio, time_max, busy_ranges, hora_pedida)
     if not slots:
         return f"No hay disponibilidad el {fecha.strftime('%d/%m')}. Querés que busque en otra fecha?"
-    lineas = [f"- {s.strftime('%A %d/%m a las %H:%M').capitalize()} [ISO:{s.isoformat()}]" for s in slots]
-    return "Turnos disponibles:\n" + "\n".join(lineas)
+    return _formatear_slots(slots)
 
 
 def _consultar_calendar(texto_fecha: str, dias: int = 1, calendar_id: str = None) -> str:
@@ -232,11 +247,7 @@ def _consultar_calendar(texto_fecha: str, dias: int = 1, calendar_id: str = None
             return (f"No hay disponibilidad el {fecha.strftime('%d/%m')}. "
                     f"Querés que busque en otra fecha?")
 
-        lineas = [
-            f"- {s.strftime('%A %d/%m a las %H:%M').capitalize()} [ISO:{s.isoformat()}]"
-            for s in slots
-        ]
-        return "Turnos disponibles:\n" + "\n".join(lineas)
+        return _formatear_slots(slots)
 
     except Exception as e:
         logging.warning(f"[❌ CALENDAR ERROR]: {e}")
