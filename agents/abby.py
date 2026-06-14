@@ -22,7 +22,6 @@ from agents.herramientas_secretarias import client_claude, enviar_mensaje_wpp, m
 SYSTEM_PROMPT_ABBY = """<IDENTIDAD>
 Sos Abby, secretaria de la Clínica Abriness, especializada en salud mental. Atendés por WhatsApp y manejás TODO: primer contacto, consultas generales, toma de datos (datos principales: dni - email - con que especialidad/profesional quiere atenderse), coordinación de turnos y confirmación.
 Escribís como una persona real: mensajes cortos, usás vos, no abrís signos de pregunta ni exclamación, sin markdown, sin **, sin listas. Una pregunta por mensaje, máximo 3 oraciones. Un 😊 u otro emoji cada tanto suma.
-Solo si te preguntan directamente si sos una IA decís la verdad: si, soy la asistente virtual de la clínica. Nunca lo negás, tampoco lo aclarás si no te lo preguntan.
 En crisis o hablando de pagos escribís sereno y cuidado, sin emojis.
 </IDENTIDAD>
 aclaracion: el contexto de tus conversaciones se borran a las 6h
@@ -90,7 +89,7 @@ P: me sacas otro turno?
 
 — Paciente nuevo —
 P: Hola, quiero agendar un turno.
-A: Hola! soy Abby, de la Clínica Abriness 😊 es tu primera vez con nosotros?
+A: Hola! Como estas? soy Abby, secretaria de la Clínica Abriness 😊 es tu primera vez con nosotros?
 P: Sí.
 A: Genial! con que especialidad te querés atender, psicología o psiquiatría?
 P: Psicología.
@@ -175,23 +174,25 @@ def _build_system_prompt(cliente: Cliente, db, empresa=None, seguimiento: str = 
     if resumen:
         lineas_memoria.append(f"- Contexto previo: {resumen}")
 
+    # ── Parte dinámica (cambia por usuario/llamada — no cacheable) ──
+    dynamic = ""
+
     if lineas_memoria:
-        bloque = (
+        dynamic += (
             "\n\n<MEMORIA_DEL_CLIENTE>\n"
             + "\n".join(lineas_memoria)
             + "\n</MEMORIA_DEL_CLIENTE>\n\n"
             "REGLA: Usá esta memoria para no repetir preguntas. Si ya sabés el profesional o la especialidad, no lo preguntes — usalo directamente. Sé natural, no parezcas un robot leyendo un formulario."
         )
-        base = base + bloque
 
     if seguimiento:
-        base += f"\n\n<SEGUIMIENTO>{seguimiento}</SEGUIMIENTO>"
+        dynamic += f"\n\n<SEGUIMIENTO>{seguimiento}</SEGUIMIENTO>"
 
     _now = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires"))
     _dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
-    base += f"\n\n<FECHA_ACTUAL>Hoy es {_dias_es[_now.weekday()]} {_now.strftime('%d/%m/%Y')}, {_now.strftime('%H:%M')}hs (Argentina).</FECHA_ACTUAL>"
+    dynamic += f"\n\n<FECHA_ACTUAL>Hoy es {_dias_es[_now.weekday()]} {_now.strftime('%d/%m/%Y')}, {_now.strftime('%H:%M')}hs (Argentina).</FECHA_ACTUAL>"
 
-    return base
+    return base, dynamic
 
 
 # ===================================================================
@@ -291,8 +292,13 @@ async def abby(
             historial.append({"role": "user", "content": user_text})
             logging.warning(f"[ABBY] Mensaje de {to_number}: {user_text}")
 
-        system_prompt = _build_system_prompt(cliente, db, empresa, seguimiento=_seguimiento)
+        system_base, system_dynamic = _build_system_prompt(cliente, db, empresa, seguimiento=_seguimiento)
         definitions, handlers = get_tools_for_abby(empresa)
+
+        # Cache en la última tool para asegurar que el total supera 2048 tokens
+        defs_cached = list(definitions)
+        if defs_cached:
+            defs_cached[-1] = {**defs_cached[-1], "cache_control": {"type": "ephemeral"}}
 
         # ── Loop de tools (máx 5 iteraciones) ──────────────────────
         MAX_ITER = 5
@@ -305,9 +311,21 @@ async def abby(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=700,
                 temperature=0.7,
-                system=system_prompt,
-                tools=definitions,
+                system=[
+                    {"type": "text", "text": system_base,    "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": system_dynamic},
+                ],
+                tools=defs_cached,
                 messages=historial
+            )
+
+            u = response.usage
+            cache_write = getattr(u, "cache_creation_input_tokens", 0) or 0
+            cache_read  = getattr(u, "cache_read_input_tokens",  0) or 0
+            logging.warning(
+                f"[CACHE] iter={iteracion+1} "
+                f"write={cache_write} read={cache_read} "
+                f"input={u.input_tokens} output={u.output_tokens}"
             )
 
             texto_bloques = [b for b in response.content if b.type == "text"]
