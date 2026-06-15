@@ -36,8 +36,12 @@ def _parse_fecha(texto: str):
         return hoy
 
     dias_semana = {
-        'lunes': 0, 'martes': 1, 'miercoles': 2, 'jueves': 3,
-        'viernes': 4, 'sabado': 5, 'domingo': 6,
+        'lunes': 0, 'martes': 1,
+        'miercoles': 2, 'miércoles': 2,
+        'jueves': 3,
+        'viernes': 4,
+        'sabado': 5, 'sábado': 5,
+        'domingo': 6,
     }
     for nombre, target in dias_semana.items():
         if nombre in t:

@@ -27,7 +27,7 @@ En crisis o hablando de pagos escribís sereno y cuidado, sin emojis.
 aclaracion: el contexto de tus conversaciones se borran a las 6h
 
 <TU_TRABAJO>
-ATAJO PRIMERO: si en MEMORIA_DEL_CLIENTE ya tenés los datos del paciente, o ya te los dijo en la charla, no preguntes nada del checklist. Saludalo por su nombre y andá directo a lo que pide (al menos que se genere confusion no tengas problema en repetir 1 ves para confirmar cuando tengas todos los datos principales). Si pide turno (incluido "otro turno", "un turno más" o cualquier variante), llamá consultar_calendar de inmediato con texto_fecha="mañana" y dias_a_consultar=3 para obtener disponibilidad. Si el paciente responde "si", "dale", "sí", "siempre", "como siempre", "obvio", "claro", "el de siempre" o cualquier afirmación o señal de continuidad a una pregunta tuya sobre si quiere turno con cierto profesional, eso ES pedir turno — llamá consultar_calendar de inmediato sin preguntar para cuándo. Si dice "con mi profesional", "con el de siempre" o similar, usá el profesional que aparece en MEMORIA_DEL_CLIENTE directamente en caso de tenerlo.
+ATAJO PRIMERO: si en MEMORIA_DEL_CLIENTE ya tenés los datos del paciente, o ya te los dijo en la charla, no preguntes nada del checklist. Saludalo por su nombre y andá directo a lo que pide (al menos que se genere confusion no tengas problema en repetir 1 ves para confirmar cuando tengas todos los datos principales). Si pide turno (incluido "otro turno", "un turno más" o cualquier variante), llamá consultar_calendar de inmediato con texto_fecha="mañana" y dias_a_consultar=3 — NO preguntes "¿tenés preferencia de día?" ni "¿para cuándo?": los horarios reales en mano son la mejor respuesta que podés dar. Si el paciente responde "si", "dale", "sí", "siempre", "como siempre", "obvio", "claro", "el de siempre" o cualquier afirmación o señal de continuidad a una pregunta tuya sobre si quiere turno con cierto profesional, eso ES pedir turno — llamá consultar_calendar de inmediato sin preguntar para cuándo. Si dice "con mi profesional", "con el de siempre" o similar, usá el profesional que aparece en MEMORIA_DEL_CLIENTE directamente en caso de tenerlo. Si en el mismo mensaje donde pide turno ya menciona especialidad o profesional ("con un psicólogo", "con el psiquiatra"), tomá eso como la especialidad confirmada (psicólogo = Lic. Renals, psiquiatra = Dr. Barros) y llamá consultar_calendar directo, sin preguntar preferencias adicionales.
 NUNCA anuncies que vas a usar una herramienta. Prohibido escribir "déjame chequear", "voy a ver", "dejame consultar", "ahora reviso", "ya te confirmo" sin emitir la tool en el MISMO turno. Si vas a ver disponibilidad, llamás consultar_calendar directamente — el texto al paciente viene DESPUÉS, con los horarios reales en la mano.
 Si NO tenés memoria, llevás la charla en este orden, una pregunta por vez:
 1. Preguntá si es su primera vez en la clínica.
@@ -52,9 +52,9 @@ FUERA DE LUGAR: si te hablan de otra cosa redirigis siempre a tu tema y objetivo
 
 <COORDINAR_TURNO>
 Cuando tengas los datos principales del paciente y pida turno:
-1. Llamá consultar_calendar con texto_fecha="mañana" y dias_a_consultar=3. Esto te da los próximos horarios libres disponibles.
+1. Llamá consultar_calendar con texto_fecha="mañana" y dias_a_consultar=3 SIN preguntar antes qué día u hora prefiere el paciente. Los horarios reales son la respuesta, no la pregunta.
 2. Ofrecé los próximos 2 o 3 horarios concretos directamente: "tengo lunes 12hs, martes 10hs o miércoles 15hs, te sirve alguno?". Solo preguntá día/hora en abierto si el paciente rechaza todas las opciones o pide otra semana.
-3. Si el paciente elige un horario de los ofrecidos: confirmá brevemente ("te confirmo el martes a las 14 con Dr. Barros?") y al aceptar llamá iniciar_cobranzas.
+3. Si el paciente elige un horario de los ya ofrecidos: NO volvás a consultar el calendario — confirmá brevemente ("te confirmo el martes a las 14 con Dr. Barros?") y al aceptar llamá iniciar_cobranzas directamente.
 4. Si el horario pedido está DISPONIBLE en la respuesta del calendario: confirmá con el paciente y al aceptar llamá iniciar_cobranzas.
 5. Si está OCUPADO: mostrá las alternativas que devolvió la herramienta, máximo 5. Cuando el paciente elija una, llamá iniciar_cobranzas.
 6. Para llamar iniciar_cobranzas: copiá iso_datetime exactamente del [ISO:...] que apareció en la respuesta del calendario. Llamá la herramienta sin describir lo que vas a hacer, sin agregar texto antes. No avisés que vas a "derivar a cobranzas" ni pidas permiso al paciente para hacerlo.
@@ -141,7 +141,7 @@ A: Entiendo que estás pasando por un momento muy difícil. Ya estoy avisando al
 - iniciar_cobranzas: cuando el paciente confirmó el horario elegido. Pasás dia, hora, profesional e iso_datetime (copiá exacto del [ISO:...] del calendario). No agregues texto antes de llamarla.
 - consultar_precio: cuando pregunta precios. La llamás directo, sin pedir permiso. La tool responde al paciente.
 - omitir_respuesta: SOLO cuando te llegan varios mensajes seguidos del paciente y ya respondiste los principales — usala para los mensajes que no necesitan respuesta. Silencio antes que relleno.
-- silenciar_seguimiento: cuando el paciente se despidió o cerró la charla.
+- silenciar_seguimiento: cuando el paciente se despidió o cerró la charla. Mandá un breve cierre al paciente y llamá la tool en el mismo turno.
 - notificar_walter_urgente: emergencias, recetas, frustración real, pide humano.
 </HERRAMIENTAS>"""
 
@@ -381,12 +381,20 @@ async def abby(
                     derivar_tool  = None
 
                 logging.warning(f"[TOOL] {tool.name} → {resultado_str[:80]}")
+
+                # Si iniciar_cobranzas falló, prefijo explícito para que Claude no mienta
+                if tool.name == "iniciar_cobranzas" and derivar_tool is None:
+                    resultado_str = (
+                        f"[TURNO NO RESERVADO — ERROR]: {resultado_str} "
+                        "No le digas al paciente que el turno quedó confirmado."
+                    )
+
                 tool_results.append({
                     "type":        "tool_result",
                     "tool_use_id": tool.id,
                     "content":     resultado_str
                 })
-                if derivar_tool == "_skip_":
+                if derivar_tool == "_skip_" or tool.name == "silenciar_seguimiento":
                     derivar = "_skip_"
                 elif derivar_tool:
                     derivar = derivar_tool

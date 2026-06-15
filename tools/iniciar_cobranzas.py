@@ -15,7 +15,7 @@ DEFINITION = {
                 "description": "Datetime ISO del slot, tal como aparece entre [ISO:...] en la respuesta del calendario."
             }
         },
-        "required": ["dia", "hora", "profesional"]
+        "required": ["dia", "hora", "profesional", "iso_datetime"]
     }
 }
 
