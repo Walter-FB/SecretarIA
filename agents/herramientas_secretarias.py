@@ -21,7 +21,7 @@ async def enviar_mensaje_wpp(to_number: str, texto: str):
         "type": "text",
         "text": {"body": texto}
     }
-    async with httpx.AsyncClient() as http:
+    async with httpx.AsyncClient(timeout=30) as http:
         r = await http.post(url, json=payload, headers=headers)
         if r.status_code != 200:
             logging.warning(f"[META {r.status_code}] {r.text}")

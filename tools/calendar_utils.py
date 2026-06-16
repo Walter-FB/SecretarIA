@@ -177,8 +177,12 @@ def _consultar_calendar_local(texto_fecha: str, dias: int = 1, profesional_id: s
     if fecha is None:
         return "No entendí la fecha. Podés decirme el día?"
 
+    ahora        = datetime.now(TIMEZONE)
     fecha_inicio = datetime(fecha.year, fecha.month, fecha.day, HORA_APERTURA, 0, tzinfo=TIMEZONE)
-    time_max     = fecha_inicio + timedelta(days=max(dias, 1))
+    # Si la fecha de inicio es en el pasado, adelantar a ahora (redondeado a la hora siguiente)
+    if fecha_inicio < ahora:
+        fecha_inicio = ahora.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    time_max     = datetime(fecha.year, fecha.month, fecha.day, HORA_APERTURA, 0, tzinfo=TIMEZONE) + timedelta(days=max(dias, 1))
     busy_ranges  = _slots_ocupados_local(db, profesional_id, fecha_inicio, time_max) if db and profesional_id else []
 
     if hora_pedida is not None:

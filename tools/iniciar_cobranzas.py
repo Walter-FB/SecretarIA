@@ -98,6 +98,8 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
                 estado            = "reservado",
             ))
             session.commit()
+            from agents.seguimiento import cancelar_timer
+            cancelar_timer(cliente.id)
             fecha_display = f"{_DIAS_ES[start.weekday()]} {start.strftime('%d/%m')} a las {start.strftime('%H')}hs"
             content = f"Turno reservado el {fecha_display} con {profesional_obj.nombre}."
         except IntegrityError:
@@ -117,6 +119,8 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
             prof_nombre = profesional_obj.nombre if profesional_obj else profesional
             descripcion = f"Turno {nombre_clinica} con {prof_nombre}. Paciente: {cliente.nombre_completo or cliente.telefono}."
             _crear_evento(service, f"Turno {nombre_clinica} - {prof_nombre}", start, end, descripcion, calendar_id)
+            from agents.seguimiento import cancelar_timer
+            cancelar_timer(cliente.id)
             fecha_display = f"{_DIAS_ES[start.weekday()]} {start.strftime('%d/%m')} a las {start.strftime('%H')}hs"
             content = f"Turno reservado el {fecha_display} con {prof_nombre}."
         except Exception as e:
@@ -125,10 +129,16 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
 
     from services.cobranza import iniciar_cobranzas as iniciar_cobranzas_svc
     esp = profesional_obj.nombre if profesional_obj else profesional
-    next_state = await iniciar_cobranzas_svc(
-        cliente.telefono,
-        especialidad   = esp,
-        detalle_turno  = content,
-        empresa_id     = empresa_id,
-    )
+    try:
+        next_state = await iniciar_cobranzas_svc(
+            cliente.telefono,
+            especialidad   = esp,
+            detalle_turno  = content,
+            empresa_id     = empresa_id,
+        )
+    except Exception as e:
+        # El turno YA está en la BD — el servicio falló después del commit.
+        # Devolvemos éxito para que el loop corte y Claude no diga "está ocupado".
+        logging.warning(f"[iniciar_cobranzas] Servicio de cobranza falló (turno ya reservado): {e}")
+        next_state = "principal"
     return content, next_state

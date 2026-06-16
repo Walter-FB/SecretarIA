@@ -15,6 +15,9 @@ router = APIRouter()
 # Lock por cliente para serializar mensajes del mismo número
 _locks: dict[str, asyncio.Lock] = {}
 
+# Deduplicación de msg_id: Meta a veces re-entrega el mismo webhook
+_processed_ids: set[str] = set()
+
 
 def _get_lock(empresa_id: str, telefono: str) -> asyncio.Lock:
     key = f"{empresa_id}:{telefono}"
@@ -54,6 +57,17 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         message        = entry["messages"][0]
         phone_number   = message["from"]
         phone_number_id = entry.get("metadata", {}).get("phone_number_id", "")
+
+        # Deduplicar: ignorar si este msg_id ya fue procesado
+        msg_id_check = message.get("id")
+        if msg_id_check:
+            if msg_id_check in _processed_ids:
+                logging.warning(f"[ROUTER] Webhook duplicado ignorado: {msg_id_check}")
+                return Response(content="OK", status_code=200)
+            _processed_ids.add(msg_id_check)
+            # Mantener el set acotado (últimos 500 IDs)
+            if len(_processed_ids) > 500:
+                _processed_ids.discard(next(iter(_processed_ids)))
 
         # ── Resolver empresa ─────────────────────────────────────────
         db = SessionLocal()

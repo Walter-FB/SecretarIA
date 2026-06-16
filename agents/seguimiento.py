@@ -51,6 +51,8 @@ async def _disparar_seguimiento(cliente_id: str, telefono: str, empresa_id: str)
         datos = cliente.datos_extraidos or {}
         if datos.get("pago_estado") in ("esperando_comprobante", "pagado"):
             return
+        if datos.get("ultimo_turno"):
+            return
 
         # Fuera de horario laboral ARG (09:00–21:00)
         hora_local = datetime.now(_TIMEZONE_ARG).hour
