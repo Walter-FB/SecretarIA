@@ -1,14 +1,25 @@
-from fastapi import APIRouter, Request, Response, BackgroundTasks
+from fastapi import APIRouter, Depends, Request, Response, BackgroundTasks
 from database import SessionLocal
 from models import Cliente, Mensaje, Empresa
+from routes.admin import _require_admin
+import hashlib
+import hmac
+import json
 import logging
 import os
 import re
 import asyncio
 
 VERIFY_TOKEN    = os.getenv("WEBHOOK_VERIFY_TOKEN", "secretarIA")
+META_APP_SECRET = os.getenv("META_APP_SECRET", "")
 LIMITE_MENSAJES = 50
 RESET_HORAS     = 24
+
+if not META_APP_SECRET:
+    logging.warning(
+        "[⚠️ SEGURIDAD] META_APP_SECRET no configurado — "
+        "el webhook acepta POSTs sin verificar la firma de Meta. Setealo en Railway."
+    )
 
 router = APIRouter()
 
@@ -45,11 +56,24 @@ async def verify(request: Request):
 # ===================================================================
 # 2. RECEPCIÓN DE MENSAJES — EL SWITCH/ENRUTADOR
 # ===================================================================
+def _firma_meta_valida(raw_body: bytes, firma_header: str | None) -> bool:
+    """Valida el header X-Hub-Signature-256 que Meta firma con el App Secret."""
+    if not firma_header or not firma_header.startswith("sha256="):
+        return False
+    esperada = hmac.new(META_APP_SECRET.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(esperada, firma_header[len("sha256="):])
+
+
 @router.post("/webhook")
 async def webhook(request: Request, background_tasks: BackgroundTasks):
-    data = await request.json()
+    raw_body = await request.body()
+
+    if META_APP_SECRET and not _firma_meta_valida(raw_body, request.headers.get("X-Hub-Signature-256")):
+        logging.warning("[ROUTER] Webhook con firma inválida o ausente. Rechazado.")
+        return Response(content="Firma invalida", status_code=403)
 
     try:
+        data = json.loads(raw_body)
         entry = data["entry"][0]["changes"][0]["value"]
         if "messages" not in entry:
             return Response(content="OK", status_code=200)
@@ -113,29 +137,6 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             if stripped.startswith("/"):
                 await _handle_control_command(stripped, empresa_id, numero_walter, background_tasks)
                 return Response(content="OK", status_code=200)
-
-        # ── Comando de testeo /borrarChat ─────────────────────────────
-        if text.strip() == "/borrarChat":
-            db = SessionLocal()
-            try:
-                c = db.query(Cliente).filter(
-                    Cliente.telefono == phone_number,
-                    Cliente.empresa_id == empresa_id
-                ).first()
-                if c:
-                    db.delete(c)
-                    db.commit()
-                    logging.warning(f"[ROUTER] Cliente {phone_number} eliminado.")
-                from agents.herramientas_secretarias import enviar_mensaje_wpp
-                background_tasks.add_task(
-                    enviar_mensaje_wpp, phone_number,
-                    "Memoria borrada. Mandame un mensaje para arrancar de cero."
-                )
-            except Exception as e:
-                logging.warning(f"[ROUTER] Error al borrar cliente: {e}")
-            finally:
-                db.close()
-            return Response(content="OK", status_code=200)
 
         # ── Cargar estado del cliente ─────────────────────────────────
         db = SessionLocal()
@@ -252,13 +253,14 @@ async def _handle_control_command(cmd: str, empresa_id: str, numero_walter: str,
             "• /mute <numero>   — silencia el bot para ese cliente\n"
             "• /unmute <numero> — reactiva el bot para ese cliente\n"
             "• /estado <numero> — muestra estado actual del cliente\n"
+            "• /borrarChat <numero> — elimina el cliente completo (testing)\n"
             "• /ayuda           — esta lista"
         )
         background_tasks.add_task(enviar_mensaje_wpp, numero_walter, texto)
         return
 
     # Comandos que requieren <numero> ─────────────────────────────────
-    if accion in ("/mute", "/unmute", "/estado"):
+    if accion in ("/mute", "/unmute", "/estado", "/borrarchat"):
         if not arg:
             background_tasks.add_task(
                 enviar_mensaje_wpp, numero_walter,
@@ -298,6 +300,19 @@ async def _handle_control_command(cmd: str, empresa_id: str, numero_walter: str,
                 )
                 logging.warning(f"[CONTROL] {cliente.telefono} -> bot_activo={cliente.bot_activo}")
 
+            elif accion == "/borrarchat":
+                from models import Turno
+                telefono_borrado = cliente.telefono
+                # Los turnos no tienen cascade — borrarlos primero para no violar la FK
+                db.query(Turno).filter(Turno.cliente_id == cliente.id).delete()
+                db.delete(cliente)
+                db.commit()
+                background_tasks.add_task(
+                    enviar_mensaje_wpp, numero_walter,
+                    f"[OK] Cliente {telefono_borrado} eliminado (mensajes y turnos incluidos)."
+                )
+                logging.warning(f"[CONTROL] Cliente {telefono_borrado} eliminado.")
+
         except Exception as e:
             logging.warning(f"[CONTROL ERROR]: {e}")
         finally:
@@ -314,7 +329,7 @@ async def _handle_control_command(cmd: str, empresa_id: str, numero_walter: str,
 # ===================================================================
 # ENDPOINT PARA VER CONVERSACIÓN COMPLETA DE UN CLIENTE
 # ===================================================================
-@router.get("/conversacion/{telefono}")
+@router.get("/conversacion/{telefono}", dependencies=[Depends(_require_admin)])
 async def ver_conversacion(telefono: str):
     db = SessionLocal()
     try:
@@ -346,7 +361,7 @@ async def ver_conversacion(telefono: str):
 # ===================================================================
 # ENDPOINT PARA VER CLIENTES
 # ===================================================================
-@router.get("/ver_clientes")
+@router.get("/ver_clientes", dependencies=[Depends(_require_admin)])
 async def ver_clientes():
     db = SessionLocal()
     try:

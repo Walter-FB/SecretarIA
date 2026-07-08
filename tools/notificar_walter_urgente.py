@@ -25,7 +25,23 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
 
     logging.warning(f"[TOOL notificar_walter_urgente] {cliente.telefono} | emergencia={es_emergencia}")
 
-    from agents.herramientas_secretarias import enviar_notificacion_a_walter
-    await enviar_notificacion_a_walter(cliente.telefono, nombre_cliente, numero_walter)
+    from agents.herramientas_secretarias import enviar_mensaje_wpp, enviar_notificacion_a_walter, NUMERO_WALTER
+
+    if es_emergencia:
+        destino = numero_walter or NUMERO_WALTER
+        mensaje = (
+            "🚨 URGENTE — posible crisis de un paciente\n"
+            f"Numero: {cliente.telefono}\n"
+            f"Nombre: {nombre_cliente}\n"
+            "Abby detectó una situación de riesgo, le recordó el 135 y la guardia, "
+            "y le avisó que el equipo lo va a contactar. Escribile o llamalo AHORA."
+        )
+        try:
+            await enviar_mensaje_wpp(destino, mensaje)
+            logging.warning("[NOTIFICACIÓN] Alerta de EMERGENCIA enviada a Walter.")
+        except Exception as e:
+            logging.warning(f"[NOTIFICACIÓN EMERGENCIA ERROR]: {e}")
+    else:
+        await enviar_notificacion_a_walter(cliente.telefono, nombre_cliente, numero_walter)
 
     return f"Walter notificado. Emergencia: {es_emergencia}.", None

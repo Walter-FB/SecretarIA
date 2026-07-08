@@ -17,7 +17,7 @@ DEFINITION = {
 
 async def handler(tool_input, cliente, session, empresa, scope=None):
     """
-    Busca por DNI en toda la BD (cross-teléfono).
+    Busca por DNI dentro de la misma empresa (cross-teléfono).
     Si encuentra datos en otro registro, los copia al cliente actual.
     Retorna (content, derivar). derivar siempre None.
     """
@@ -30,7 +30,10 @@ async def handler(tool_input, cliente, session, empresa, scope=None):
         )
     logging.warning(f"[TOOL verificar_paciente_existente] Buscando DNI {dni_buscado}")
 
-    encontrado = session.query(Cliente).filter(Cliente.dni == dni_buscado).first()
+    encontrado = session.query(Cliente).filter(
+        Cliente.dni == dni_buscado,
+        Cliente.empresa_id == cliente.empresa_id,
+    ).first()
 
     if not encontrado:
         logging.warning(f"[TOOL verificar_paciente_existente] DNI {dni_buscado} no encontrado.")

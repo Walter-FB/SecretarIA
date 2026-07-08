@@ -198,7 +198,7 @@ El webhook extrae `phone_number_id` → busca empresa → fallback a `EMPRESA_DE
 | `/unmute <num>` | `cliente.bot_activo = True` |
 | `/estado <num>` | Devuelve estado_agente, bot_activo, nombre |
 | `/ayuda` | Lista comandos |
-| `/borrarChat` | Elimina cliente de BD (cualquier número, para testing) |
+| `/borrarChat <num>` | Elimina cliente + sus turnos (SOLO Walter — antes era público, se cerró por seguridad) |
 
 ---
 
@@ -255,6 +255,8 @@ WHATSAPP_TOKEN            API WhatsApp Cloud
 PHONE_NUMBER_ID           ID número Meta
 CLAUDE_API_KEY            Anthropic
 WEBHOOK_VERIFY_TOKEN      default: "secretarIA"
+META_APP_SECRET           App Secret de Meta — valida la firma X-Hub-Signature-256 del webhook.
+                          Sin setear: acepta todo + warning (setearlo en Railway)
 GOOGLE_SERVICE_ACCOUNT    JSON completo Service Account
 CALENDAR_ID               Google Calendar ID
 BREVO_API_KEY             Emails
@@ -271,6 +273,13 @@ Single-page en `/admin`. Auth por Bearer token (`ADMIN_TOKEN`). Token en memoria
 
 ## Consideraciones no obvias
 
+- **Seguridad (jul 2026):** el webhook valida la firma de Meta si `META_APP_SECRET` está seteado;
+  `/conversacion/{telefono}` y `/ver_clientes` requieren Bearer `ADMIN_TOKEN` (antes eran públicos
+  y filtraban historial clínico); `verificar_paciente_existente` filtra por `empresa_id`.
+- **Emergencias:** `notificar_walter_urgente` con `es_emergencia=true` manda alerta 🚨 propia
+  (sobria, con teléfono y nombre). El template "Cliente interesado! 🥰" queda SOLO para el caso
+  no-emergencia — sigue intacto (regla del README). Ambos dependen de la ventana de 24h de Meta;
+  alerta garantizada fuera de ventana requeriría una plantilla aprobada (pendiente).
 - **Sanitización de texto** (`enviar_mensaje_wpp`): se eliminan `¿`, `¡` y `**` de todos los mensajes salientes.
 - **Historial a Claude en UTC**, Calendar en `America/Argentina/Buenos_Aires`. No mezclar.
 - **SQLite local:** no tiene migraciones aplicadas. Correr `alembic upgrade head` o `reset_db.py` al agregar columnas.
